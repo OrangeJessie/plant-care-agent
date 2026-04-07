@@ -488,7 +488,7 @@ def main() -> None:
                 messages.pop()
                 return
 
-        if http_status != 200 or not raw.strip():
+        if status != 200 or not raw.strip():
             console.print(Panel(f"[red]异常响应[/red]\n{raw[:1500]}", title="错误", border_style="red"))
             messages.pop()
             return
