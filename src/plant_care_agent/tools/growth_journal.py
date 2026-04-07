@@ -1,17 +1,20 @@
 """growth_journal — 植物生长日志（Markdown 文件持久化）。
 
-存储结构:
+存储结构（每棵植物一个文件夹）:
   data/garden/
-    GARDEN.md          索引（自动维护）
-    {plant_id}.md      每株植物一个 markdown 日志
+    GARDEN.md              索引（自动维护）
+    栀子花/
+      journal.md           生长日志
+    薄荷/
+      journal.md
 
-每个植物文件:
+journal.md 格式:
   ---
   name: 我的番茄
-  species: tomato          (可选，初次记录时设)
+  species: tomato
   planted: 2026-04-01
-  location: 阳台            (可选)
-  stage: 苗期               (根据事件自动推进)
+  location: 阳台
+  stage: 苗期
   events: 5
   ---
   # 我的番茄
@@ -33,6 +36,13 @@ from nat.builder.builder import Builder
 from nat.builder.function import FunctionGroup
 from nat.cli.register_workflow import register_function_group
 from nat.data_models.function import FunctionGroupBaseConfig
+
+from plant_care_agent.garden_paths import (
+    ensure_plant_dir,
+    index_path,
+    journal_path,
+    list_plant_dirs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,16 +77,8 @@ class GrowthJournalConfig(FunctionGroupBaseConfig, name="growth_journal"):
     )
 
 
-def _safe_id(plant_id: str) -> str:
-    return plant_id.strip().replace("/", "_")
-
-
 def _plant_path(garden_dir: Path, plant_id: str) -> Path:
-    return garden_dir / f"{_safe_id(plant_id)}.md"
-
-
-def _index_path(garden_dir: Path) -> Path:
-    return garden_dir / "GARDEN.md"
+    return journal_path(garden_dir, plant_id)
 
 
 def _parse_fm(text: str) -> dict[str, str]:
@@ -123,7 +125,7 @@ def _days_since(planted_str: str) -> int:
         return 0
 
 
-def _create_new_plant(path: Path, plant_id: str) -> tuple[dict[str, str], str]:
+def _create_new_plant(path: Path, plant_id: str, garden_dir: Path) -> tuple[dict[str, str], str]:
     today = date.today().isoformat()
     fm = {
         "name": plant_id,
@@ -132,6 +134,7 @@ def _create_new_plant(path: Path, plant_id: str) -> tuple[dict[str, str], str]:
         "events": "0",
     }
     body = f"\n# {plant_id}\n\n## 日志\n"
+    ensure_plant_dir(garden_dir, plant_id)
     _save_plant(path, fm, body)
     return fm, body
 
@@ -157,23 +160,24 @@ def _append_event(fm: dict[str, str], body: str, event_type: str, description: s
 
 
 def _rebuild_index(garden_dir: Path) -> None:
-    files = sorted(p for p in garden_dir.glob("*.md") if p.name != "GARDEN.md")
+    plant_dirs = list_plant_dirs(garden_dir)
     lines = [
         "# 🌱 我的花园\n",
         "| 植物 | 品种 | 种植日期 | 阶段 | 记录数 |",
         "|------|------|----------|------|--------|",
     ]
-    for f in files:
-        fm, body = _load_plant(f)
-        name = fm.get("name") or f.stem
+    for d in plant_dirs:
+        j = d / "journal.md"
+        fm, body = _load_plant(j)
+        name = fm.get("name") or d.name
         species = fm.get("species", "-")
         planted = fm.get("planted", "-")
         stage = fm.get("stage", "-")
         events = fm.get("events") or str(_count_events(body))
-        lines.append(f"| [{name}]({f.name}) | {species} | {planted} | {stage} | {events} |")
+        lines.append(f"| [{name}]({d.name}/journal.md) | {species} | {planted} | {stage} | {events} |")
 
     lines.append(f"\n_更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}_\n")
-    _index_path(garden_dir).write_text("\n".join(lines), encoding="utf-8")
+    index_path(garden_dir).write_text("\n".join(lines), encoding="utf-8")
 
 
 @register_function_group(config_type=GrowthJournalConfig)
@@ -205,7 +209,7 @@ async def growth_journal_group(config: GrowthJournalConfig, _builder: Builder):
         if path.exists():
             fm, body = _load_plant(path)
         else:
-            fm, body = _create_new_plant(path, plant_id)
+            fm, body = _create_new_plant(path, plant_id, garden_dir)
 
         for k, v in extra.items():
             if k in ("species", "location"):
@@ -258,18 +262,18 @@ async def growth_journal_group(config: GrowthJournalConfig, _builder: Builder):
     async def _list_plants(query: str) -> str:
         """List all plants that have growth journals.
         Input can be anything (ignored), returns all tracked plants with summaries."""
-        files = sorted(p for p in garden_dir.glob("*.md") if p.name != "GARDEN.md")
-        if not files:
+        plant_dirs = list_plant_dirs(garden_dir)
+        if not plant_dirs:
             return "暂无任何植物的生长记录。开始记录您的第一棵植物吧！"
 
-        index = _index_path(garden_dir)
-        if index.exists():
-            return index.read_text(encoding="utf-8")
+        idx = index_path(garden_dir)
+        if idx.exists():
+            return idx.read_text(encoding="utf-8")
 
         lines = ["🌱 我的花园\n"]
-        for f in files:
-            fm, body = _load_plant(f)
-            name = fm.get("name") or f.stem
+        for d in plant_dirs:
+            fm, body = _load_plant(d / "journal.md")
+            name = fm.get("name") or d.name
             events = fm.get("events") or str(_count_events(body))
             stage = fm.get("stage", "-")
             days = _days_since(fm.get("planted", ""))

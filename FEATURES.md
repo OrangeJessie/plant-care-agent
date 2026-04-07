@@ -42,6 +42,27 @@ plant-care-agent/
 
 两个模式通过不同的 `config_*.yml` 启动，共享工具在 `register.py` 中统一导入。
 
+### Garden 数据目录结构（每棵植物一个文件夹）
+
+```
+data/garden/
+├── GARDEN.md                   # 索引（自动维护）
+├── projects.json               # 植物项目管理数据
+├── proactive_last_snapshot.json
+├── 栀子花/
+│   ├── journal.md              # 生长日志
+│   ├── inspection.md           # 巡检报告
+│   ├── 栀子花_timeline.png     # 时间线图
+│   ├── 栀子花_dashboard.png    # 看板图
+│   └── 栀子花_成长故事_*.pptx  # 幻灯片
+├── 薄荷/
+│   ├── journal.md
+│   └── ...
+└── compare.png                 # 多植物对比图
+```
+
+路径解析统一由 `garden_paths.py` 集中管理，所有模块通过它获取文件路径。
+
 ---
 
 ## 模式切换
@@ -83,7 +104,7 @@ plant-care-agent/
 |------|------|
 | 文件 | `tools/growth_journal.py` |
 | 功能 | Markdown 格式单株植物生长日志，支持记录事件和查询历史 |
-| 存储 | `data/garden/{plant_name}.md` |
+| 存储 | `data/garden/{plant_name}/journal.md`（每棵植物一个文件夹） |
 | 已测试 | [ ] |
 | 功能正常 | [ ] |
 | 备注 | |
@@ -94,7 +115,7 @@ plant-care-agent/
 |------|------|
 | 文件 | `tools/plant_chart.py` |
 | 功能 | 生成时间线、看板 dashboard、多株对比图 (Matplotlib) |
-| 输出 | `data/charts/*.png` |
+| 输出 | `data/garden/{plant_name}/*_timeline.png`, `*_dashboard.png` |
 | 已测试 | [ ] |
 | 功能正常 | [ ] |
 | 备注 | |
@@ -105,7 +126,7 @@ plant-care-agent/
 |------|------|
 | 文件 | `tools/growth_slides.py` |
 | 功能 | 生成 PPTX 成长报告（嵌入图表） |
-| 输出 | `data/slides/*.pptx` |
+| 输出 | `data/garden/{plant_name}/*_成长故事_*.pptx` |
 | 已测试 | [ ] |
 | 功能正常 | [ ] |
 | 备注 | |
@@ -163,7 +184,7 @@ scripts/plant_inspector_cron.py (后台定时)
 |--------|---------|------|
 | 天气评估 | Open-Meteo API（未来 3 天） | 极端天气预警 + 操作建议 |
 | 养护日程 | 生长日志事件分析 | 距上次浇水/施肥天数 + 待办提醒 |
-| 生长分析 | `data/garden/{plant}.md` | 阶段评估 + 记录频率检查 |
+| 生长分析 | `data/garden/{plant}/journal.md` | 阶段评估 + 记录频率检查 |
 | 病虫害风险 | 天气条件 + 生长阶段 | 风险等级（低/中/高）+ 预防措施 |
 
 #### Wrapper 意图检测

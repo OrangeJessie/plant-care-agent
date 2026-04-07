@@ -82,11 +82,10 @@ def _recent_events_block(events: list[dict[str, str]], n: int = 8) -> str:
 
 
 def load_plant_row(path: Path) -> PlantDigestRow | None:
-    stem = path.stem
-    if stem.lower() in RESERVED_STEMS:
+    """从 journal.md 加载植物数据行。path 应指向 journal.md 文件。"""
+    if not path.exists():
         return None
-    if path.name in ("GARDEN.md", "PROACTIVE_DIGEST.md"):
-        return None
+    plant_id = path.parent.name
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
@@ -95,9 +94,9 @@ def load_plant_row(path: Path) -> PlantDigestRow | None:
     body = _strip_fm(text)
     events = parse_events(body)
     fp = events_fingerprint(events)
-    name = fm.get("name") or stem
+    name = fm.get("name") or plant_id
     return PlantDigestRow(
-        plant_id=stem,
+        plant_id=plant_id,
         display_name=name,
         stage=fm.get("stage", ""),
         species=fm.get("species", ""),
@@ -108,12 +107,14 @@ def load_plant_row(path: Path) -> PlantDigestRow | None:
 
 
 def list_plants(garden_dir: Path, plant_ids: list[str] | None) -> list[PlantDigestRow]:
+    from plant_care_agent.garden_paths import list_plant_dirs
+
     if not garden_dir.is_dir():
         return []
     want = {p.strip() for p in plant_ids} if plant_ids else None
     rows: list[PlantDigestRow] = []
-    for p in sorted(garden_dir.glob("*.md")):
-        row = load_plant_row(p)
+    for d in list_plant_dirs(garden_dir):
+        row = load_plant_row(d / "journal.md")
         if row is None:
             continue
         if want is not None and row.plant_id not in want:

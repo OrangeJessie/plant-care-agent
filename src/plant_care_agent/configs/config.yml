@@ -23,12 +23,9 @@ functions:
   plant_chart:
     _type: plant_chart
     garden_dir: ./data/garden
-    output_dir: ./data/charts
   growth_slides:
     _type: growth_slides
     garden_dir: ./data/garden
-    charts_dir: ./data/charts
-    output_dir: ./data/slides
   skill_tools:
     _type: skill_tools
     load_max_chars: 12000

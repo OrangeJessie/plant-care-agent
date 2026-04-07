@@ -1,12 +1,7 @@
 """plant_chart — 植物生长数据可视化工具。
 
-读取 data/garden/ 下的 Markdown 日志，用 matplotlib 生成:
-- 事件时间线图
-- 事件类型分布饼图
-- 多植物对比图
-- 单张综合看板（dashboard）
-
-输出 PNG 文件到 data/charts/ 目录。
+读取 data/garden/{植物名}/journal.md 日志，用 matplotlib 生成图表。
+图表输出到对应植物文件夹下，多植物对比图输出到 garden 根目录。
 """
 
 import logging
@@ -21,6 +16,13 @@ from nat.builder.builder import Builder
 from nat.builder.function_info import FunctionInfo
 from nat.cli.register_workflow import register_function
 from nat.data_models.function import FunctionBaseConfig
+
+from plant_care_agent.garden_paths import (
+    chart_path,
+    compare_chart_path,
+    ensure_plant_dir,
+    journal_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +80,11 @@ def _load_plant(path: Path) -> tuple[dict[str, str], str, list[dict]]:
 
 class PlantChartConfig(FunctionBaseConfig, name="plant_chart"):
     garden_dir: str = Field(default="./data/garden")
-    output_dir: str = Field(default="./data/charts")
 
 
 @register_function(config_type=PlantChartConfig)
 async def plant_chart_function(config: PlantChartConfig, _builder: Builder):
     garden = Path(config.garden_dir)
-    charts = Path(config.output_dir)
 
     async def _timeline(plant_id: str) -> str:
         """Generate a timeline chart for a plant's growth events.
@@ -99,13 +99,14 @@ async def plant_chart_function(config: PlantChartConfig, _builder: Builder):
         except ImportError:
             return "需要安装 matplotlib: pip install matplotlib"
 
-        path = garden / f"{plant_id.strip()}.md"
+        pid = plant_id.strip()
+        path = journal_path(garden, pid)
         if not path.exists():
-            return f"未找到「{plant_id}」的日志文件。"
+            return f"未找到「{pid}」的日志文件。"
 
         fm, _, events = _load_plant(path)
         if not events:
-            return f"「{plant_id}」暂无事件记录，无法生成图表。"
+            return f"「{pid}」暂无事件记录，无法生成图表。"
 
         _setup_chinese_font(plt, font_manager)
 
@@ -136,12 +137,12 @@ async def plant_chart_function(config: PlantChartConfig, _builder: Builder):
         ax.spines["right"].set_visible(False)
         ax.spines["top"].set_visible(False)
 
-        name = fm.get("name", plant_id)
+        name = fm.get("name", pid)
         stage = fm.get("stage", "")
         ax.set_title(f"🌱 {name} 生长时间线  [{stage}]", fontsize=14, pad=20)
 
-        charts.mkdir(parents=True, exist_ok=True)
-        out = charts / f"{plant_id.strip()}_timeline.png"
+        out = chart_path(garden, pid, "timeline")
+        ensure_plant_dir(garden, pid)
         fig.tight_layout()
         fig.savefig(str(out), dpi=150, bbox_inches="tight")
         plt.close(fig)
@@ -160,13 +161,14 @@ async def plant_chart_function(config: PlantChartConfig, _builder: Builder):
         except ImportError:
             return "需要安装 matplotlib: pip install matplotlib"
 
-        path = garden / f"{plant_id.strip()}.md"
+        pid = plant_id.strip()
+        path = journal_path(garden, pid)
         if not path.exists():
-            return f"未找到「{plant_id}」的日志文件。"
+            return f"未找到「{pid}」的日志文件。"
 
         fm, _, events = _load_plant(path)
         if not events:
-            return f"「{plant_id}」暂无事件记录。"
+            return f"「{pid}」暂无事件记录。"
 
         _setup_chinese_font(plt, font_manager)
 
@@ -174,7 +176,7 @@ async def plant_chart_function(config: PlantChartConfig, _builder: Builder):
                                  gridspec_kw={"width_ratios": [3, 1.5, 1.5]})
         fig.patch.set_facecolor("#FAFAF5")
 
-        name = fm.get("name", plant_id)
+        name = fm.get("name", pid)
         fig.suptitle(f"🌱 {name} 养护看板", fontsize=16, fontweight="bold", y=1.02)
 
         ax1 = axes[0]
@@ -231,8 +233,8 @@ async def plant_chart_function(config: PlantChartConfig, _builder: Builder):
                  fontsize=10, va="top", family="monospace",
                  linespacing=1.8)
 
-        charts.mkdir(parents=True, exist_ok=True)
-        out = charts / f"{plant_id.strip()}_dashboard.png"
+        out = chart_path(garden, pid, "dashboard")
+        ensure_plant_dir(garden, pid)
         fig.tight_layout()
         fig.savefig(str(out), dpi=150, bbox_inches="tight")
         plt.close(fig)
@@ -265,7 +267,7 @@ async def plant_chart_function(config: PlantChartConfig, _builder: Builder):
         found_any = False
 
         for i, name in enumerate(names):
-            path = garden / f"{name}.md"
+            path = journal_path(garden, name)
             if not path.exists():
                 continue
             fm, _, events = _load_plant(path)
@@ -292,8 +294,8 @@ async def plant_chart_function(config: PlantChartConfig, _builder: Builder):
         ax.tick_params(axis="x", rotation=45)
         ax.grid(True, alpha=0.3)
 
-        charts.mkdir(parents=True, exist_ok=True)
-        out = charts / "compare.png"
+        out = compare_chart_path(garden)
+        garden.mkdir(parents=True, exist_ok=True)
         fig.tight_layout()
         fig.savefig(str(out), dpi=150, bbox_inches="tight")
         plt.close(fig)

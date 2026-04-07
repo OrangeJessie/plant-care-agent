@@ -77,7 +77,8 @@ def _parse_fm(text: str) -> dict[str, str]:
 
 
 def _load_journal(garden_dir: Path, plant_name: str) -> tuple[dict[str, str], str]:
-    path = garden_dir / f"{plant_name.strip().replace('/', '_')}.md"
+    from plant_care_agent.garden_paths import journal_path
+    path = journal_path(garden_dir, plant_name)
     if not path.exists():
         return {}, ""
     text = path.read_text(encoding="utf-8")

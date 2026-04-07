@@ -1,14 +1,7 @@
 """growth_slides — 将植物成长日志生成 PPTX 幻灯片。
 
-从 data/garden/{plant}.md 读取日志和 data/charts/ 下的图表，
-自动组装成一份美观的成长故事 PPT。
-
-幻灯片结构:
-  1. 封面：植物名 + 种植天数 + 阶段
-  2. 基本信息：品种/位置/种植日期等
-  3-N. 按时间分组的日志页（每页一天或一周）
-  N+1. 图表页（如果有 charts 目录下的图）
-  N+2. 总结页
+从 data/garden/{植物名}/journal.md 读取日志，同目录下读取图表，
+自动组装成一份美观的成长故事 PPT，输出到植物文件夹。
 """
 
 import logging
@@ -24,6 +17,15 @@ from nat.builder.function_info import FunctionInfo
 from nat.cli.register_workflow import register_function
 from nat.data_models.function import FunctionBaseConfig
 
+from plant_care_agent.garden_paths import (
+    chart_path,
+    ensure_plant_dir,
+    garden_slides_path,
+    journal_path,
+    list_plant_dirs,
+    slides_path,
+)
+
 logger = logging.getLogger(__name__)
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
@@ -38,8 +40,6 @@ STAGE_EMOJI = {
 
 class GrowthSlidesConfig(FunctionBaseConfig, name="growth_slides"):
     garden_dir: str = Field(default="./data/garden")
-    charts_dir: str = Field(default="./data/charts")
-    output_dir: str = Field(default="./data/slides")
 
 
 def _parse_fm(text: str) -> dict[str, str]:
@@ -76,8 +76,6 @@ def _parse_events(body: str) -> list[dict]:
 @register_function(config_type=GrowthSlidesConfig)
 async def growth_slides_function(config: GrowthSlidesConfig, _builder: Builder):
     garden = Path(config.garden_dir)
-    charts_dir = Path(config.charts_dir)
-    output_dir = Path(config.output_dir)
 
     async def _generate_slides(plant_id: str) -> str:
         """Generate a PPTX slide deck showing a plant's growth story.
@@ -93,7 +91,7 @@ async def growth_slides_function(config: GrowthSlidesConfig, _builder: Builder):
             return "需要安装 python-pptx: pip install python-pptx"
 
         pid = plant_id.strip()
-        path = garden / f"{pid}.md"
+        path = journal_path(garden, pid)
         if not path.exists():
             return f"未找到「{pid}」的日志文件。"
 
@@ -207,11 +205,10 @@ async def growth_slides_function(config: GrowthSlidesConfig, _builder: Builder):
 
         # --- Chart slides ---
         chart_files = []
-        if charts_dir.is_dir():
-            for suffix in ("_timeline.png", "_dashboard.png"):
-                cf = charts_dir / f"{pid}{suffix}"
-                if cf.exists():
-                    chart_files.append(cf)
+        for ctype in ("timeline", "dashboard"):
+            cf = chart_path(garden, pid, ctype)
+            if cf.exists():
+                chart_files.append(cf)
 
         for cf in chart_files:
             slide = prs.slides.add_slide(prs.slide_layouts[6])
@@ -241,9 +238,9 @@ async def growth_slides_function(config: GrowthSlidesConfig, _builder: Builder):
                   16, False, GREEN_LIGHT, PP_ALIGN.CENTER)
 
         # --- Save ---
-        output_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M")
-        out_path = output_dir / f"{pid}_成长故事_{ts}.pptx"
+        out_path = slides_path(garden, pid, ts)
+        ensure_plant_dir(garden, pid)
         prs.save(str(out_path))
 
         return (
@@ -266,8 +263,8 @@ async def growth_slides_function(config: GrowthSlidesConfig, _builder: Builder):
         except ImportError:
             return "需要安装 python-pptx: pip install python-pptx"
 
-        files = sorted(p for p in garden.glob("*.md") if p.name != "GARDEN.md")
-        if not files:
+        pdirs = list_plant_dirs(garden)
+        if not pdirs:
             return "暂无植物日志，无法生成幻灯片。"
 
         GREEN_DARK = RGBColor(0x2E, 0x7D, 0x32)
@@ -303,20 +300,21 @@ async def growth_slides_function(config: GrowthSlidesConfig, _builder: Builder):
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         _set_bg(slide, GREEN_DARK)
         _txt(slide, 1, 2, 11, 1.5, "🌱 我的花园", 44, True, WHITE, PP_ALIGN.CENTER)
-        _txt(slide, 1, 4, 11, 1, f"共 {len(files)} 株植物的成长记录",
+        _txt(slide, 1, 4, 11, 1, f"共 {len(pdirs)} 株植物的成长记录",
              22, False, GREEN_LIGHT, PP_ALIGN.CENTER)
         _txt(slide, 1, 5.5, 11, 0.5,
              f"生成于 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
              12, False, GREEN_LIGHT, PP_ALIGN.CENTER)
 
         # Per-plant summary
-        for fpath in files:
-            text = fpath.read_text(encoding="utf-8")
+        for pdir in pdirs:
+            jpath = pdir / "journal.md"
+            text = jpath.read_text(encoding="utf-8")
             fm = _parse_fm(text)
             body = FRONTMATTER_RE.sub("", text, count=1)
             events = _parse_events(body)
 
-            pname = fm.get("name", fpath.stem)
+            pname = fm.get("name", pdir.name)
             stage = fm.get("stage", "-")
             emoji = STAGE_EMOJI.get(stage, "🌱")
 
@@ -342,16 +340,16 @@ async def growth_slides_function(config: GrowthSlidesConfig, _builder: Builder):
                     _txt(slide, 1.2, y, 10, 0.35, line, 14, False, GRAY)
                     y += 0.45
 
-            chart_path = charts_dir / f"{fpath.stem}_dashboard.png"
-            if chart_path.exists():
+            dash = chart_path(garden, pdir.name, "dashboard")
+            if dash.exists():
                 try:
-                    slide.shapes.add_picture(str(chart_path), Inches(0.8), Inches(4.5), Inches(11.5))
+                    slide.shapes.add_picture(str(dash), Inches(0.8), Inches(4.5), Inches(11.5))
                 except Exception:
                     pass
 
-        output_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M")
-        out_path = output_dir / f"花园总览_{ts}.pptx"
+        out_path = garden_slides_path(garden, ts)
+        garden.mkdir(parents=True, exist_ok=True)
         prs.save(str(out_path))
 
         return f"✅ 花园总览幻灯片已生成: {out_path}\n   共 {len(prs.slides)} 页。"

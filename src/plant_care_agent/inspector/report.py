@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+from plant_care_agent.garden_paths import ensure_plant_dir, inspection_path
 from plant_care_agent.inspector.inspector import PlantInspectionResult
 
 STATUS_ICON = {"ok": "🟢", "warning": "🟡", "critical": "🔴"}
@@ -18,10 +19,8 @@ STATUS_LABEL = {"ok": "正常", "warning": "需关注", "critical": "紧急"}
 def generate_report(result: PlantInspectionResult, garden_dir: str | Path) -> Path:
     """将单株巡检结果写入 Markdown 文件，返回文件路径。"""
     garden_dir = Path(garden_dir)
-    garden_dir.mkdir(parents=True, exist_ok=True)
-
-    safe_name = result.plant_name.strip().replace("/", "_")
-    out_path = garden_dir / f"{safe_name}_inspection.md"
+    ensure_plant_dir(garden_dir, result.plant_name)
+    out_path = inspection_path(garden_dir, result.plant_name)
 
     overall = STATUS_ICON.get(result.overall_status, "⚪")
     lines = [

@@ -1,24 +1,12 @@
-"""从 data/garden/ 下的 Markdown 植物日志构造给 LLM 的「种植记忆」上下文。
+"""从 data/garden/{植物名}/journal.md 构造给 LLM 的「种植记忆」上下文。
 
 目录结构:
   data/garden/
-    GARDEN.md          索引文件（自动维护）
-    我的番茄.md         每株植物一个文件
-    阳台薄荷.md         ...
-
-每个植物文件格式:
-  ---                  YAML frontmatter
-  name: 我的番茄
-  species: tomato
-  planted: 2026-04-01
-  location: 阳台
-  stage: 苗期
-  events: 5
-  ---
-  # 我的番茄
-  ## 日志
-  ### 2026-04-01
-  - **[播种]** 在阳台花盆中播下了5粒番茄种子
+    GARDEN.md              索引文件
+    栀子花/
+      journal.md           生长日志
+    薄荷/
+      journal.md
 """
 
 from __future__ import annotations
@@ -27,6 +15,8 @@ import logging
 import re
 from datetime import date
 from pathlib import Path
+
+from plant_care_agent.garden_paths import list_plant_dirs, plant_id_from_dir
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +42,8 @@ def strip_frontmatter(text: str) -> str:
 
 
 def list_plant_files(garden_dir: Path) -> list[Path]:
-    if not garden_dir.is_dir():
-        return []
-    return sorted(
-        p for p in garden_dir.glob("*.md")
-        if p.name != "GARDEN.md"
-    )
+    """返回所有植物的 journal.md 路径。"""
+    return [d / "journal.md" for d in list_plant_dirs(garden_dir)]
 
 
 def load_plant_md(filepath: Path) -> tuple[dict[str, str], str]:
@@ -154,14 +140,14 @@ def build_memory_context(
     focus = (focus_plant_id or "").strip()
     if not focus and len(files) == 1:
         fm, _ = load_plant_md(files[0])
-        focus = fm.get("name") or files[0].stem
+        focus = fm.get("name") or plant_id_from_dir(files[0].parent)
 
     sections: list[str] = ["## 种植记忆\n"]
     matched_focus = False
 
     for filepath in files:
         fm, body = load_plant_md(filepath)
-        name = fm.get("name") or filepath.stem
+        name = fm.get("name") or plant_id_from_dir(filepath.parent)
 
         if _match_focus(name, focus):
             sections.append(format_plant_full(name, fm, body))
