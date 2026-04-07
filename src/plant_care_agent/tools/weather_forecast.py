@@ -23,14 +23,7 @@ CITY_COORDS: dict[str, tuple[float, float]] = {
     "哈尔滨": (45.75, 126.65), "沈阳": (41.80, 123.43),
 }
 
-WMO_WEATHER_CODES: dict[int, str] = {
-    0: "晴", 1: "大部晴", 2: "多云", 3: "阴",
-    45: "雾", 48: "雾凇", 51: "小毛毛雨", 53: "中毛毛雨", 55: "大毛毛雨",
-    61: "小雨", 63: "中雨", 65: "大雨",
-    71: "小雪", 73: "中雪", 75: "大雪",
-    80: "阵雨", 81: "中阵雨", 82: "大阵雨",
-    95: "雷暴", 96: "雷暴+小冰雹", 99: "雷暴+大冰雹",
-}
+from plant_care_agent.weather_codes import WMO_WEATHER_CODES
 
 
 class WeatherForecastConfig(FunctionBaseConfig, name="weather_forecast"):

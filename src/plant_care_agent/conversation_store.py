@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,8 @@ from nat.data_models.api_server import Message
 from nat.data_models.api_server import UserMessageContentRoleType
 
 from plant_care_agent.chat_round_log import message_content_to_text
+
+logger = logging.getLogger(__name__)
 
 _SAFE_RE = re.compile(r"[^a-zA-Z0-9._-]+")
 
@@ -233,3 +236,55 @@ def merge_conversation_transcript(
     if incremental:
         return loaded + raw_ua
     return list(raw_ua)
+
+
+def cleanup_old_transcripts(
+    store_dir: Path,
+    max_age_days: int = 30,
+    max_count: int = 100,
+) -> int:
+    """删除过期和超量的对话文件，返回删除数量。"""
+    import time
+
+    if not store_dir.is_dir():
+        return 0
+
+    files = list(store_dir.glob("*.md"))
+    if not files:
+        return 0
+
+    now = time.time()
+    max_age_secs = max_age_days * 86400
+    deleted = 0
+
+    # 按 mtime 排序（最旧在前）
+    files.sort(key=lambda f: f.stat().st_mtime)
+
+    # 1. 删除超龄文件
+    remaining = []
+    for f in files:
+        try:
+            age = now - f.stat().st_mtime
+            if age > max_age_secs:
+                f.unlink()
+                deleted += 1
+                logger.debug("对话清理: 删除过期文件 %s (%.0f 天)", f.name, age / 86400)
+            else:
+                remaining.append(f)
+        except OSError:
+            remaining.append(f)
+
+    # 2. 如果剩余数量 > max_count，删除最老的
+    if len(remaining) > max_count:
+        to_remove = remaining[: len(remaining) - max_count]
+        for f in to_remove:
+            try:
+                f.unlink()
+                deleted += 1
+                logger.debug("对话清理: 删除超量文件 %s", f.name)
+            except OSError:
+                pass
+
+    if deleted:
+        logger.info("对话清理: 共删除 %d 个过期/超量对话文件 (store=%s)", deleted, store_dir)
+    return deleted

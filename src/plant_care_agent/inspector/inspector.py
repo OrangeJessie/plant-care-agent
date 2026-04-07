@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
 from plant_care_agent.inspector.project_manager import PlantProject
@@ -26,6 +26,22 @@ DATE_HEADING_RE = re.compile(r"^### (\d{4}-\d{2}-\d{2})", re.MULTILINE)
 WATERING_TYPES = {"浇水", "灌溉"}
 FERTILIZE_TYPES = {"施肥"}
 PEST_TYPES = {"病害", "虫害", "除虫"}
+
+DEFAULT_FERT_INTERVAL = 14
+DEFAULT_WATER_INTERVAL = 3
+DEFAULT_PEST_INTERVAL = 30
+
+
+def current_season() -> str:
+    """返回当前季节（春季/夏季/秋季/冬季）。模块级函数，供其他模块导入使用。"""
+    month = date.today().month
+    if month in (3, 4, 5):
+        return "春季"
+    if month in (6, 7, 8):
+        return "夏季"
+    if month in (9, 10, 11):
+        return "秋季"
+    return "冬季"
 
 
 @dataclass
@@ -169,6 +185,11 @@ class PlantInspector:
             logger.warning("Weather fetch failed: %s", exc)
             return {}
 
+    # WMO weather codes for severe conditions
+    _HAIL_CODES = {96, 99}
+    _THUNDERSTORM_CODES = {95, 96, 99}
+    _HEAVY_RAIN_CODES = {65, 67, 75, 77, 82, 85, 86}
+
     def _check_weather(self, project: PlantProject, wx: dict) -> InspectionItem:
         if not wx:
             return InspectionItem("天气评估", "ok", "无法获取天气数据", [])
@@ -179,31 +200,60 @@ class PlantInspector:
         max_temps = daily.get("temperature_2m_max", [])
         precip_sums = daily.get("precipitation_sum", [])
         precip_probs = daily.get("precipitation_probability_max", [])
+        weather_codes = daily.get("weather_code", [])
+        wind_maxes = daily.get("wind_speed_10m_max", [])
 
         actions: list[str] = []
         warnings: list[str] = []
         status = "ok"
 
+        def _elevate(new_status: str) -> str:
+            order = ["ok", "warning", "critical"]
+            return max(status, new_status, key=lambda s: order.index(s))
+
         for i, d in enumerate(dates[:3]):
             t_min = min_temps[i] if i < len(min_temps) else None
             t_max = max_temps[i] if i < len(max_temps) else None
             precip = precip_sums[i] if i < len(precip_sums) else 0
-            precip_prob = precip_probs[i] if i < len(precip_probs) else 0
+            wcode = weather_codes[i] if i < len(weather_codes) else 0
+            wind = wind_maxes[i] if i < len(wind_maxes) else 0
+
+            if wcode in self._HAIL_CODES:
+                warnings.append(f"{d} 冰雹预警 (code={wcode})")
+                actions.append(f"冰雹预警: {d} 立即将植物移入室内或加盖保护！")
+                status = "critical"
+
+            if wind and wind > 75:
+                warnings.append(f"{d} 大风 {wind}km/h")
+                actions.append(f"大风预警: {d} 风速 {wind}km/h，固定花盆防倒伏，脆弱植物移入室内")
+                status = "critical"
+            elif wind and wind > 50:
+                warnings.append(f"{d} 强风 {wind}km/h")
+                actions.append(f"强风提醒: {d} 风速 {wind}km/h，注意固定花盆")
+                status = _elevate("warning")
 
             if t_min is not None and t_min < 5:
                 warnings.append(f"{d} 最低温 {t_min}°C")
                 actions.append(f"低温预警: {d} 降至 {t_min}°C，建议移入室内或覆盖保温")
-                status = "critical" if t_min < 0 else "warning"
+                status = "critical" if t_min < 0 else _elevate("warning")
 
-            if t_max is not None and t_max > 35:
-                warnings.append(f"{d} 最高温 {t_max}°C")
+            if t_max is not None and t_max > 40:
+                warnings.append(f"{d} 极端高温 {t_max}°C")
+                actions.append(f"极端高温: {d} 升至 {t_max}°C，必须遮阴、充分浇水、避免午间暴晒")
+                status = "critical"
+            elif t_max is not None and t_max > 35:
+                warnings.append(f"{d} 高温 {t_max}°C")
                 actions.append(f"高温预警: {d} 升至 {t_max}°C，注意遮阴和增加浇水")
-                status = max(status, "warning", key=lambda s: ["ok", "warning", "critical"].index(s))
+                status = _elevate("warning")
 
-            if precip and precip > 30:
+            if precip and precip > 50:
+                warnings.append(f"{d} 强降水 {precip}mm")
+                actions.append(f"强降水预警: {d} 预计 {precip}mm，户外植物务必避雨！")
+                status = "critical"
+            elif precip and precip > 30:
                 warnings.append(f"{d} 降水 {precip}mm")
                 actions.append(f"暴雨预警: {d} 预计 {precip}mm，户外盆栽考虑避雨")
-                status = max(status, "warning", key=lambda s: ["ok", "warning", "critical"].index(s))
+                status = _elevate("warning")
 
         has_rain = any((p or 0) > 0 for p in precip_sums[:3])
         if has_rain:
@@ -220,23 +270,55 @@ class PlantInspector:
         days_water = _days_since_event_type(events, WATERING_TYPES)
         days_fert = _days_since_event_type(events, FERTILIZE_TYPES)
 
-        stage = fm.get("stage", "")
-        season = self._current_season()
+        # 从项目配置读取 LLM 设定的参数，无则用默认值
+        water_interval = project.water_interval_days or DEFAULT_WATER_INTERVAL
+        fert_interval = project.fert_interval_days or DEFAULT_FERT_INTERVAL
+        fert_type = project.fert_type or ""
 
-        water_interval = 3 if season in ("夏季",) else 4
-        if stage in ("苗期", "播种期"):
-            water_interval = 2
+        # 判断当前月份是否在免施肥月份内
+        dormant_months: set[int] = set()
+        if project.fert_dormant_months:
+            for tok in project.fert_dormant_months.split(","):
+                tok = tok.strip()
+                if tok.isdigit():
+                    dormant_months.add(int(tok))
+        is_fert_dormant = date.today().month in dormant_months
 
+        # --- 浇水 ---
         if days_water is None:
             actions.append("尚无浇水记录，请检查土壤湿度")
             status = "warning"
         elif days_water >= water_interval:
-            actions.append(f"距上次浇水已 {days_water} 天，建议检查土壤湿度并浇水")
+            actions.append(f"距上次浇水已 {days_water} 天（间隔 {water_interval} 天），建议检查土壤湿度并浇水")
             status = "warning"
 
-        fert_interval = 14
-        if days_fert is not None and days_fert >= fert_interval and stage not in ("播种期", "采收期"):
-            actions.append(f"距上次施肥已 {days_fert} 天，建议适量追肥")
+        # --- 施肥 ---
+        if is_fert_dormant:
+            if days_fert is not None:
+                actions.append(f"当前月份（{date.today().month} 月）为免施肥期，暂停施肥")
+        elif days_fert is None:
+            hint = f"尚无施肥记录（建议每 {fert_interval} 天施一次肥"
+            if fert_type:
+                hint += f"，推荐: {fert_type}"
+            hint += "）"
+            actions.append(hint)
+            status = "warning"
+        elif days_fert >= fert_interval:
+            hint = f"距上次施肥已 {days_fert} 天（间隔 {fert_interval} 天），该施肥了"
+            if fert_type:
+                hint += f"，推荐使用: {fert_type}"
+            actions.append(hint)
+            status = "warning"
+
+        # --- 驱虫 ---
+        days_pest = _days_since_event_type(events, PEST_TYPES)
+        pest_interval = project.pest_interval_days or DEFAULT_PEST_INTERVAL
+        if days_pest is None:
+            actions.append(f"尚无驱虫记录（建议每 {pest_interval} 天预防一次）")
+            status = "warning"
+        elif days_pest >= pest_interval:
+            actions.append(f"距上次驱虫已 {days_pest} 天（间隔 {pest_interval} 天），建议预防性除虫")
+            status = "warning"
 
         today = date.today()
         if today.weekday() == 5:
@@ -244,9 +326,18 @@ class PlantInspector:
 
         summary_parts: list[str] = []
         if days_water is not None:
-            summary_parts.append(f"距上次浇水 {days_water} 天")
+            summary_parts.append(f"距上次浇水 {days_water} 天（间隔 {water_interval} 天）")
         if days_fert is not None:
-            summary_parts.append(f"距上次施肥 {days_fert} 天")
+            fert_note = f"距上次施肥 {days_fert} 天"
+            if is_fert_dormant:
+                fert_note += "（当前免施肥期）"
+            else:
+                fert_note += f"（间隔 {fert_interval} 天）"
+            summary_parts.append(fert_note)
+        if fert_type:
+            summary_parts.append(f"推荐肥料: {fert_type}")
+        if days_pest is not None:
+            summary_parts.append(f"距上次驱虫 {days_pest} 天（间隔 {pest_interval} 天）")
         summary = "；".join(summary_parts) if summary_parts else "暂无养护记录"
 
         return InspectionItem("养护日程", status, summary, actions)
@@ -255,6 +346,7 @@ class PlantInspector:
         stage = fm.get("stage", "未知")
         planted_str = fm.get("planted") or project.planted_date
         total_events = len(events)
+        season = self._current_season()
 
         days_since_plant = 0
         if planted_str:
@@ -277,7 +369,7 @@ class PlantInspector:
             actions.append(f"种植 {days_since_plant} 天仍在播种期，确认是否已发芽")
             status = "warning"
 
-        summary = f"阶段: {stage} | 种植 {days_since_plant} 天 | {total_events} 条记录"
+        summary = f"阶段: {stage} | 季节: {season} | 种植 {days_since_plant} 天 | {total_events} 条记录"
         if recent_lines:
             summary += "\n  最近: " + "；".join(recent_lines[-3:])
 
@@ -287,6 +379,7 @@ class PlantInspector:
         current = wx.get("current", {})
         temp = current.get("temperature_2m", 25)
         humidity = current.get("relative_humidity_2m", 60)
+        season = self._current_season()
 
         risk_score = 0
         risk_factors: list[str] = []
@@ -302,6 +395,13 @@ class PlantInspector:
         if stage in ("苗期", "花期"):
             risk_score += 1
             risk_factors.append(f"{stage}易感")
+
+        # 春夏季节病虫害活跃
+        if season in ("夏季",):
+            risk_score += 1
+            risk_factors.append(f"{season}病虫害高发")
+        elif season in ("春季",):
+            risk_factors.append(f"{season}病虫害渐增")
 
         days_pest = _days_since_event_type(events, PEST_TYPES)
         if days_pest is not None and days_pest < 14:
@@ -336,11 +436,4 @@ class PlantInspector:
 
     @staticmethod
     def _current_season() -> str:
-        month = date.today().month
-        if month in (3, 4, 5):
-            return "春季"
-        if month in (6, 7, 8):
-            return "夏季"
-        if month in (9, 10, 11):
-            return "秋季"
-        return "冬季"
+        return current_season()

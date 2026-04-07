@@ -38,8 +38,8 @@ OPERATION_TYPES = {
     "pest_control": {
         "name": "除虫",
         "icon": "🐛",
-        "effects": {},
-        "description": "对指定地块进行病虫害防治。",
+        "effects": {"moisture_delta": 5.0, "ph_delta": -0.1},
+        "description": "对指定地块进行病虫害防治（喷施农药会轻微增加土壤湿度、微降 pH）。",
     },
     "climate_control": {
         "name": "通风遮阳",
@@ -50,8 +50,8 @@ OPERATION_TYPES = {
     "harvest": {
         "name": "收割",
         "icon": "🌾",
-        "effects": {},
-        "description": "对指定地块作物进行收割。",
+        "effects": {"moisture_delta": -5.0},
+        "description": "对指定地块作物进行收割（收割后地表裸露，土壤湿度略降）。",
     },
 }
 

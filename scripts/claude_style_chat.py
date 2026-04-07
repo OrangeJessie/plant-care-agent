@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 import urllib.error
 import urllib.request
@@ -236,6 +237,50 @@ def main() -> None:
     if mode == "farm":
         console.print("[dim]提示：请确保 NAT 服务使用 config_farm.yml 启动[/dim]\n")
 
+    def do_send(user_text: str, spinner: str = "思考中…") -> None:
+        nonlocal conversation_reset_next
+        messages.append({"role": "user", "content": user_text})
+        with console.status(f"[bold cyan]{spinner}[/bold cyan]", spinner="dots"):
+            try:
+                status, raw = _post_chat(
+                    url,
+                    messages,
+                    user_id,
+                    focus_plant,
+                    timeout,
+                    session_id=session_id,
+                    conversation_reset=conversation_reset_next,
+                )
+            except urllib.error.HTTPError as e:
+                err = e.read().decode("utf-8", errors="replace")
+                console.print(Panel(f"[red]HTTP {e.code}[/red]\n{err}", title="错误", border_style="red"))
+                messages.pop()
+                return
+            except urllib.error.URLError as e:
+                console.print(Panel(f"[red]连接失败[/red]\n{e.reason}", title="错误", border_style="red"))
+                messages.pop()
+                return
+        if status != 200 or not raw.strip():
+            console.print(Panel(f"[red]异常响应[/red]\n{raw[:1500]}", title="错误", border_style="red"))
+            messages.pop()
+            return
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            console.print(Panel(f"[red]非 JSON[/red]\n{raw[:1500]}", title="错误", border_style="red"))
+            messages.pop()
+            return
+        if "error" in data:
+            console.print(Panel(str(data["error"]), title="API 错误", border_style="red"))
+            messages.pop()
+            return
+        reply = _extract_assistant_text(data)
+        messages.append({"role": "assistant", "content": reply})
+        conversation_reset_next = False
+        console.print(Rule(style="dim"))
+        console.print(Panel(Markdown(reply), title="[bold green]助手[/bold green]", border_style="green"))
+        console.print()
+
     while True:
         try:
             user_text = session.prompt().strip()
@@ -338,21 +383,51 @@ def main() -> None:
                     "[yellow]用法:[/yellow] /proactive on|off|status|ntfy <topic>|webhook <url>\n"
                 )
                 continue
+            if cmd == "/image":
+                if not arg:
+                    console.print(
+                        "[yellow]用法:[/yellow] /image <图片路径> [说明文字]\n"
+                        "[dim]示例: /image ~/Desktop/rose.jpg 叶子发黄是什么原因？[/dim]\n"
+                    )
+                    continue
+                try:
+                    img_parts = shlex.split(arg)
+                except ValueError:
+                    img_parts = arg.split(maxsplit=1)
+                img_path_str = img_parts[0]
+                img_desc = " ".join(img_parts[1:]).strip() if len(img_parts) > 1 else "请分析这张植物照片，诊断健康状况"
+                img_path = Path(img_path_str).expanduser().resolve()
+                if not img_path.exists():
+                    console.print(f"[red]文件不存在:[/red] {img_path}\n")
+                    continue
+                if img_path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+                    console.print(
+                        f"[red]不支持的格式:[/red] {img_path.suffix}，"
+                        "请使用 JPG / PNG / WebP / GIF\n"
+                    )
+                    continue
+                console.print(f"[dim]已附加图片:[/dim] [cyan]{img_path.name}[/cyan]\n")
+                do_send(
+                    f"{img_desc}\n请调用 plant_image_analyzer 工具，image_path 参数为：{img_path}",
+                    "分析图片中…",
+                )
+                continue
             if cmd == "/mode":
                 console.print(f"[dim]当前模式:[/dim] [cyan]{mode}[/cyan]\n")
                 continue
             if cmd == "/help":
                 help_text = (
                     "[bold]命令[/bold]\n"
-                    "  /help       帮助\n"
-                    "  /mode       查看当前运行模式\n"
-                    "  /clear      清空本地历史并下一跳重置服务端对话记忆\n"
-                    "  /url URL    切换接口地址\n"
+                    "  /help                        帮助\n"
+                    "  /mode                        查看当前运行模式\n"
+                    "  /clear                       清空本地历史并下一跳重置服务端对话记忆\n"
+                    "  /url URL                     切换接口地址\n"
+                    "  /image <路径> [说明]          上传本地图片进行植物诊断\n"
                 )
                 if mode == "personal":
                     help_text += (
-                        "  /focus 名   设置 X-Focus-Plant；/focus 无参数则清除\n"
-                        "  /proactive  主动巡检：on | off | status | ntfy <topic> | webhook <url>\n"
+                        "  /focus 名                    设置 X-Focus-Plant；/focus 无参数则清除\n"
+                        "  /proactive on|off|status     主动巡检：ntfy <topic> | webhook <url>\n"
                     )
                 else:
                     help_text += (
@@ -363,59 +438,13 @@ def main() -> None:
                         "    sensor_trend / farm_dashboard / zone_comparison\n"
                         "    generate_daily_report / generate_zone_report\n"
                     )
-                help_text += "  /q          退出\n"
+                help_text += "  /q                           退出\n"
                 console.print(help_text)
                 continue
             console.print(f"[yellow]未知命令:[/yellow] {cmd}，输入 /help\n")
             continue
 
-        messages.append({"role": "user", "content": user_text})
-
-        with console.status("[bold cyan]思考中…[/bold cyan]", spinner="dots"):
-            try:
-                status, raw = _post_chat(
-                    url,
-                    messages,
-                    user_id,
-                    focus_plant,
-                    timeout,
-                    session_id=session_id,
-                    conversation_reset=conversation_reset_next,
-                )
-            except urllib.error.HTTPError as e:
-                err = e.read().decode("utf-8", errors="replace")
-                console.print(Panel(f"[red]HTTP {e.code}[/red]\n{err}", title="错误", border_style="red"))
-                messages.pop()
-                continue
-            except urllib.error.URLError as e:
-                console.print(Panel(f"[red]连接失败[/red]\n{e.reason}", title="错误", border_style="red"))
-                messages.pop()
-                continue
-
-        if status != 200 or not raw.strip():
-            console.print(Panel(f"[red]异常响应[/red]\n{raw[:1500]}", title="错误", border_style="red"))
-            messages.pop()
-            continue
-
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            console.print(Panel(f"[red]非 JSON[/red]\n{raw[:1500]}", title="错误", border_style="red"))
-            messages.pop()
-            continue
-
-        if "error" in data:
-            console.print(Panel(str(data["error"]), title="API 错误", border_style="red"))
-            messages.pop()
-            continue
-
-        reply = _extract_assistant_text(data)
-        messages.append({"role": "assistant", "content": reply})
-        conversation_reset_next = False
-
-        console.print(Rule(style="dim"))
-        console.print(Panel(Markdown(reply), title="[bold green]助手[/bold green]", border_style="green"))
-        console.print()
+        do_send(user_text)
 
 
 if __name__ == "__main__":

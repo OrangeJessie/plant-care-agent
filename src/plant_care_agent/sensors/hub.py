@@ -151,7 +151,10 @@ class SensorHub:
     def _build_ctx(self, zone_id: str) -> SensorContext:
         zc = self._zones.get(zone_id, ZoneConfig(zone_id=zone_id, name=zone_id))
         last = self._store.get_latest(zone_id)
-        return SensorContext.now(zone_config=zc, weather=self._weather_cache)
+        ctx = SensorContext.now(zone_config=zc, weather=self._weather_cache)
+        if last:
+            ctx.last_readings = last
+        return ctx
 
     def read_all(self, zone_id: str) -> list[SensorReading]:
         if zone_id not in self._sensors:

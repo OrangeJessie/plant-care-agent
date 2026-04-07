@@ -6,6 +6,9 @@ import json
 import logging
 from pathlib import Path
 
+import aiohttp
+
+from plant_care_agent.sensors.base import WeatherSnapshot
 from plant_care_agent.sensors.hub import SensorHub
 
 logger = logging.getLogger(__name__)
@@ -31,7 +34,46 @@ OP_NAMES = {
 }
 
 
-def build_farm_context(farm_dir: str | Path) -> str:
+OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+
+# WMO codes that indicate significant cloud cover
+_CLOUDY_CODES = {2, 3, 45, 48, 51, 53, 55, 61, 63, 65, 71, 73, 75, 80, 81, 82, 85, 86, 95, 96, 99}
+
+
+async def _fetch_weather_snapshot(lat: float = 31.23, lon: float = 121.47) -> WeatherSnapshot | None:
+    """从 Open-Meteo 获取当前天气并转换为 WeatherSnapshot。"""
+    try:
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "current": "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,cloud_cover",
+            "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+            "timezone": "auto",
+            "forecast_days": 1,
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(OPEN_METEO_URL, params=params) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+
+        current = data.get("current", {})
+        daily = data.get("daily", {})
+        return WeatherSnapshot(
+            temperature=current.get("temperature_2m", 25.0),
+            humidity=current.get("relative_humidity_2m", 60.0),
+            wind_speed_kmh=current.get("wind_speed_10m", 10.0),
+            weather_code=current.get("weather_code", 0),
+            precipitation_probability=daily.get("precipitation_probability_max", [0.0])[0],
+            cloud_cover=current.get("cloud_cover", 30.0) / 100.0,
+            temp_max=daily.get("temperature_2m_max", [30.0])[0],
+            temp_min=daily.get("temperature_2m_min", [20.0])[0],
+        )
+    except Exception as e:
+        logger.warning("Farm weather fetch failed: %s", e)
+        return None
+
+
+async def build_farm_context(farm_dir: str | Path) -> str:
     """构建注入到 system 消息的农场上下文。"""
     farm_dir = Path(farm_dir)
     sections: list[str] = []
@@ -44,6 +86,14 @@ def build_farm_context(farm_dir: str | Path) -> str:
         logger.warning("Failed to initialize SensorHub: %s", e)
         sections.append("⚠️ 传感器系统初始化失败，请检查 farm_config.yaml。")
         return "\n".join(sections)
+
+    # 自动同步天气到传感器模拟层
+    first_zone = hub.get_zone(hub.zone_ids[0]) if hub.zone_ids else None
+    lat = first_zone.latitude if first_zone else 31.23
+    lon = first_zone.longitude if first_zone else 121.47
+    wx_snap = await _fetch_weather_snapshot(lat, lon)
+    if wx_snap is not None:
+        hub.set_weather(wx_snap)
 
     for zid in hub.zone_ids:
         zc = hub.get_zone(zid)

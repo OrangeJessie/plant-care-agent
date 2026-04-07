@@ -26,6 +26,7 @@ from nat.utils.type_converter import GlobalTypeConverter
 from plant_care_agent.chat_round_log import append_round_block
 from plant_care_agent.chat_round_log import assistant_text_from_chat_response
 from plant_care_agent.conversation_store import clear_transcript
+from plant_care_agent.conversation_store import cleanup_old_transcripts
 from plant_care_agent.conversation_store import header_get
 from plant_care_agent.conversation_store import header_truthy
 from plant_care_agent.conversation_store import load_transcript
@@ -36,6 +37,7 @@ from plant_care_agent.conversation_store import transcript_path
 from plant_care_agent.logging_setup import ensure_root_file_logging
 from plant_care_agent.logging_setup import parse_log_level
 from plant_care_agent.memory.farm_context_builder import build_farm_context
+from plant_care_agent.prompts.loader import get_domain_prompt
 from plant_care_agent.skills.registry import build_skills_index_text
 
 logger = logging.getLogger(__name__)
@@ -65,6 +67,16 @@ class FarmMemoryWrapperConfig(FunctionBaseConfig, name="farm_memory_wrapper"):
     conversation_memory_enabled: bool = Field(default=True)
     conversation_store_dir: str = Field(default="./data/conversations")
     conversation_auto_incremental: bool = Field(default=True)
+    conversation_max_age_days: int = Field(
+        default=30,
+        ge=1,
+        description="对话记忆最大保留天数，超龄文件自动清理。",
+    )
+    conversation_max_count: int = Field(
+        default=100,
+        ge=10,
+        description="对话记忆最大文件数量，超量时删除最老的。",
+    )
     description: str = Field(default="注入农场上下文后调用内层对话 Agent。")
 
 
@@ -74,6 +86,7 @@ async def farm_memory_wrapper_fn(config: FarmMemoryWrapperConfig, builder: Build
     farm_dir = Path(config.farm_dir)
     log_path_str = (config.file_log_path or "").strip()
     log_file_path = Path(log_path_str) if log_path_str else None
+    _cleanup_counter = [0]  # mutable container for closure
 
     async def _response_fn(
         chat_request_or_message: ChatRequestOrMessage,
@@ -127,7 +140,7 @@ async def farm_memory_wrapper_fn(config: FarmMemoryWrapperConfig, builder: Build
         if log_file_path is not None:
             ensure_root_file_logging(log_file_path, parse_log_level(config.file_log_level))
 
-        farm_block = build_farm_context(farm_dir)
+        farm_block = await build_farm_context(farm_dir)
 
         farm_msg = Message(
             role=UserMessageContentRoleType.SYSTEM,
@@ -143,6 +156,15 @@ async def farm_memory_wrapper_fn(config: FarmMemoryWrapperConfig, builder: Build
                 content=skills_block,
             )
             msgs.insert(insert_at, skills_msg)
+            insert_at += 1
+
+        domain_text = get_domain_prompt("farm")
+        if domain_text.strip():
+            domain_msg = Message(
+                role=UserMessageContentRoleType.SYSTEM,
+                content=domain_text,
+            )
+            msgs.insert(insert_at, domain_msg)
 
         new_req = req.model_copy(update={"messages": msgs})
 
@@ -186,6 +208,13 @@ async def farm_memory_wrapper_fn(config: FarmMemoryWrapperConfig, builder: Build
                         ),
                     )
                 save_transcript(conv_file, tail, user_id=user_key, session_id=session_key)
+                _cleanup_counter[0] += 1
+                if _cleanup_counter[0] % 50 == 0:
+                    cleanup_old_transcripts(
+                        store_dir,
+                        config.conversation_max_age_days,
+                        config.conversation_max_count,
+                    )
 
         if chat_request_or_message.is_string:
             return assistant_out

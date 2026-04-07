@@ -50,14 +50,17 @@ async def plant_project_function(config: PlantProjectConfig, _builder: Builder):
         proj = mgr.create_project(name, species=species, location=location)
 
         result = await inspector.inspect(proj)
+        mgr.mark_inspected(name)
         report_path = generate_report(result, config.garden_dir)
+
+        _push_first_inspection(config.garden_dir, name, result)
 
         return (
             f"✅ 已为「{name}」创建植物管理项目（子 Agent 已上线）\n\n"
             f"  品种: {species or '未设置'}\n"
             f"  位置: {location or '未设置'}\n"
             f"  种植日期: {proj.planted_date}\n"
-            f"  巡检间隔: 每 {proj.inspect_interval_hours} 小时\n\n"
+            f"  自动巡检: 已开启（每日定时 + 紧急告警）\n\n"
             f"📋 首次巡检完成（{result.status_label}）:\n"
             + _format_inspection_brief(result)
             + f"\n\n详细报告: {report_path}\n\n"
@@ -77,12 +80,26 @@ async def plant_project_function(config: PlantProjectConfig, _builder: Builder):
         lines = ["🌱 植物管理项目列表\n"]
         for p in projects:
             status = "🟢 活跃" if p.active else "⚪ 已停止"
+            inspect_flag = "开启" if p.inspection_enabled else "已关闭"
             last = p.last_inspected[:16] if p.last_inspected else "从未"
+            care_parts: list[str] = []
+            if p.fert_interval_days:
+                care_parts.append(f"施肥每{p.fert_interval_days}天")
+            if p.fert_type:
+                care_parts.append(p.fert_type)
+            if p.fert_dormant_months:
+                care_parts.append(f"免施肥:{p.fert_dormant_months}月")
+            if p.water_interval_days:
+                care_parts.append(f"浇水每{p.water_interval_days}天")
+            if p.pest_interval_days:
+                care_parts.append(f"驱虫每{p.pest_interval_days}天")
+            care_info = " | ".join(care_parts) if care_parts else "未设置（请调用 set_care_schedule）"
             lines.append(
                 f"  {status} {p.name}\n"
                 f"     品种: {p.species or '-'} | 位置: {p.location or '-'}\n"
                 f"     种植: {p.planted_date} | 上次巡检: {last}\n"
-                f"     需要巡检: {'是' if p.needs_inspection() else '否'}"
+                f"     自动巡检: {inspect_flag}\n"
+                f"     养护方案: {care_info}"
             )
         return "\n".join(lines)
 
@@ -130,6 +147,89 @@ async def plant_project_function(config: PlantProjectConfig, _builder: Builder):
             return f"✅ 已停止「{plant_name}」的子 Agent 监控。历史数据保留。"
         return f"未找到植物项目「{plant_name}」。"
 
+    async def _toggle_plant_inspection(entry: str) -> str:
+        """Enable or disable automatic inspection for a plant.
+        Input format: 'plant_name | on' or 'plant_name | off'
+        Example: '我的番茄 | off' to disable inspection."""
+        parts = [p.strip() for p in entry.split("|")]
+        if len(parts) < 2:
+            return "格式: '植物名 | on' 或 '植物名 | off'"
+
+        name = parts[0]
+        action = parts[1].lower()
+        if action not in ("on", "off", "开启", "关闭"):
+            return "第二个参数请用 on/off（或 开启/关闭）。"
+
+        enabled = action in ("on", "开启")
+        proj = mgr.toggle_inspection(name, enabled)
+        if proj is None:
+            return f"未找到植物项目「{name}」。"
+
+        state = "已开启" if enabled else "已关闭"
+        return f"✅ 「{name}」的自动巡检{state}。"
+
+    async def _set_care_schedule(entry: str) -> str:
+        """Set care schedule parameters for a plant (fertilization, watering & pest prevention).
+        The LLM should call this after creating a plant project, based on plant species knowledge.
+
+        Input format: 'plant_name | fert_interval_days=N | fert_type=TYPE | fert_dormant_months=M1,M2 | water_interval_days=N | pest_interval_days=N'
+        All fields except plant_name are optional.
+
+        Examples:
+          '栀子花 | fert_interval_days=14 | fert_type=酸性肥料（硫酸亚铁/矾肥水） | fert_dormant_months=12,1,2 | water_interval_days=3 | pest_interval_days=30'
+          '仙人掌 | fert_interval_days=30 | fert_type=稀薄液肥 | fert_dormant_months=11,12,1,2 | water_interval_days=14'
+          '我的番茄 | fert_interval_days=10 | fert_type=有机肥+磷钾肥 | water_interval_days=2 | pest_interval_days=14'
+        """
+        parts = [p.strip() for p in entry.split("|")]
+        if not parts or not parts[0]:
+            return (
+                "格式: 'plant_name | fert_interval_days=N | fert_type=TYPE "
+                "| fert_dormant_months=M1,M2 | water_interval_days=N | pest_interval_days=N'"
+            )
+
+        name = parts[0]
+        proj = mgr.get_project(name)
+        if proj is None:
+            return f"未找到植物项目「{name}」。请先用 create_plant_project 创建。"
+
+        kwargs: dict = {}
+        for part in parts[1:]:
+            if "=" not in part:
+                continue
+            key, val = part.split("=", 1)
+            key = key.strip()
+            val = val.strip()
+            if key == "fert_interval_days":
+                kwargs["fert_interval_days"] = int(val)
+            elif key == "fert_type":
+                kwargs["fert_type"] = val
+            elif key == "fert_dormant_months":
+                kwargs["fert_dormant_months"] = val
+            elif key == "water_interval_days":
+                kwargs["water_interval_days"] = int(val)
+            elif key == "pest_interval_days":
+                kwargs["pest_interval_days"] = int(val)
+
+        if not kwargs:
+            return "未解析到有效参数。请至少提供一项: fert_interval_days / fert_type / fert_dormant_months / water_interval_days / pest_interval_days"
+
+        updated = mgr.set_care_schedule(name, **kwargs)
+        if updated is None:
+            return f"未找到植物项目「{name}」。"
+
+        lines = [f"✅ 已为「{name}」设置养护方案:"]
+        if updated.fert_interval_days:
+            lines.append(f"  施肥间隔: 每 {updated.fert_interval_days} 天")
+        if updated.fert_type:
+            lines.append(f"  推荐肥料: {updated.fert_type}")
+        if updated.fert_dormant_months:
+            lines.append(f"  免施肥月份: {updated.fert_dormant_months} 月")
+        if updated.water_interval_days:
+            lines.append(f"  浇水间隔: 每 {updated.water_interval_days} 天")
+        if updated.pest_interval_days:
+            lines.append(f"  驱虫间隔: 每 {updated.pest_interval_days} 天")
+        return "\n".join(lines)
+
     yield FunctionInfo.from_fn(
         _create_plant_project,
         description="为新种植的植物创建管理项目，启动子 Agent 监控。格式: 'plant_name | species | location'。",
@@ -150,6 +250,48 @@ async def plant_project_function(config: PlantProjectConfig, _builder: Builder):
         _remove_plant_project,
         description="停止植物管理项目的子 Agent 监控。输入植物名称。",
     )
+    yield FunctionInfo.from_fn(
+        _toggle_plant_inspection,
+        description="开启或关闭某棵植物的自动巡检。格式: '植物名 | on/off'。",
+    )
+    yield FunctionInfo.from_fn(
+        _set_care_schedule,
+        description=(
+            "根据植物特性设置养护方案（施肥间隔、肥料类型、免施肥月份、浇水间隔、驱虫间隔）。"
+            "创建植物项目后必须调用此工具。"
+            "格式: 'plant_name | fert_interval_days=N | fert_type=TYPE | fert_dormant_months=M1,M2 | water_interval_days=N | pest_interval_days=N'"
+        ),
+    )
+
+
+def _push_first_inspection(garden_dir: str, plant_name: str, result) -> None:
+    """首次巡检完成后推送通知（如果配置了推送）。"""
+    try:
+        from pathlib import Path
+        from plant_care_agent.proactive.monitor_yaml import load_monitor_config
+        from plant_care_agent.proactive.push import push_digest
+
+        cfg = load_monitor_config(Path(garden_dir))
+        push_cfg = cfg.get("push") or {}
+        mode = (push_cfg.get("mode") or "none").lower()
+        if mode == "none":
+            return
+
+        icon = {"ok": "🟢", "warning": "🟡", "critical": "🔴"}.get(result.overall_status, "⚪")
+        title = f"🌱 新植物「{plant_name}」已加入巡检"
+        body_parts = [f"首次巡检结果: {icon} {result.status_label}", ""]
+        for item in result.items:
+            item_icon = {"ok": "🟢", "warning": "🟡", "critical": "🔴"}.get(item.status, "⚪")
+            body_parts.append(f"{item_icon} {item.check_name}: {item.summary.split(chr(10))[0]}")
+        if result.all_actions:
+            body_parts.append("")
+            body_parts.append("待办:")
+            for a in result.all_actions[:5]:
+                body_parts.append(f"  - {a}")
+
+        push_digest(push_cfg, title, "\n".join(body_parts), [])
+    except Exception as exc:
+        logger.warning("首巡推送失败（非致命）: %s", exc)
 
 
 def _format_inspection_brief(result) -> str:

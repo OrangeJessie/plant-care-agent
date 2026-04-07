@@ -26,13 +26,14 @@ plant-care-agent/
 ├── src/plant_care_agent/
 │   ├── register.py              # NAT 插件入口，统一注册所有工具
 │   ├── configs/
-│   │   ├── config.yml           # 个人模式配置
-│   │   └── config_farm.yml      # 农业模式配置
+│   │   ├── config.yml           # 个人模式配置（system_prompt 为占位符）
+│   │   ├── config_farm.yml      # 农业模式配置（system_prompt 为占位符）
+│   │   └── .generated/          # assemble_config.py 生成的运行时 config（gitignored）
 │   ├── sensors/                 # 独立传感器模拟模块
 │   ├── tools/                   # NAT 工具（个人 + 农业 + 共享）
 │   ├── memory/                  # 上下文构建器
-│   ├── prompts/                 # Markdown 提示词
-│   ├── skills/bundled/          # 内置 Skills
+│   ├── prompts/                 # Markdown 提示词（loader.py 组装 → wrapper 注入）
+│   ├── skills/bundled/          # 内置 Skills（8 个）
 │   ├── proactive/               # 主动巡检
 │   └── data/                    # 打包数据
 ├── scripts/                     # 辅助脚本
@@ -153,39 +154,86 @@ data/garden/
 
 ### 1.8 植物子 Agent 巡检系统 (`inspector/`)
 
-用户种植新植物时自动创建管理项目，每棵植物有独立的巡检子 Agent。支持后台定时巡检和用户交互时即时巡检。
+用户种植新植物时自动创建管理项目并立即执行首次巡检。后台采用双轨策略：每日定时推送汇总 + 紧急天气即时告警。支持单株植物关闭巡检。
 
 #### 架构
 
 ```
 plant_memory_wrapper (主 Agent)
-  ├── 意图检测: "种了XXX" → 提示 Agent 调 create_plant_project
+  ├── 意图检测: "种了XXX" → create_plant_project（含首巡 + 推送）
   ├── 请求前: 调度 PlantInspector 执行巡检
   ├── 聚合报告 → 注入 system message
+  ├── 后台循环 A: _daily_digest_loop（每日定时全量巡检 + 推送）
+  ├── 后台循环 B: _emergency_weather_loop（每 2h 天气轮询，仅 critical 推送）
   └── inner_react (LLM Agent, 含 plant_project 工具)
-
-scripts/plant_inspector_cron.py (后台定时)
-  └── 遍历 projects.json → 各植物巡检 → 写入报告 → 推送告警
 ```
+
+#### 巡检策略
+
+| 场景 | 触发条件 | 推送规则 |
+|------|---------|---------|
+| 新植物首巡 | `create_plant_project` 被调用 | 立即推送首巡结果 |
+| 每日汇总 | 每天定时（默认 8:00） | **无论好坏都推送**完整汇总 |
+| 紧急天气 | 每 2 小时轮询天气 | **仅 critical 时推送**（冰雹/冰冻/强降水/大风等），24h 去重 |
+| 用户主动 | "巡检一下" / "检查" | 结果注入对话，不额外推送 |
+| 静默巡检 | 对话时到期植物 | 注入上下文，不推送 |
+
+#### 单株巡检开关
+
+用户可以对某棵植物关闭自动巡检：
+- 对话中说"关闭 XX 的巡检" → Agent 调用 `toggle_plant_inspection('XX | off')`
+- 重新开启："开启 XX 的巡检" → `toggle_plant_inspection('XX | on')`
+- 关闭后：每日汇总和紧急轮询均跳过该植物，但手动 `inspect_plant` 仍可用
 
 #### 子模块详情
 
 | 模块 | 文件 | 功能 | 已测试 | 功能正常 |
 |------|------|------|--------|---------|
-| PlantProjectManager | `inspector/project_manager.py` | 植物项目 CRUD，存储 `data/garden/projects.json` | [ ] | [ ] |
-| PlantInspector | `inspector/inspector.py` | 4 项规则引擎巡检（天气/养护/生长/病虫害） | [ ] | [ ] |
+| PlantProjectManager | `inspector/project_manager.py` | 植物项目 CRUD + `inspection_enabled` 开关 + 养护参数 | [ ] | [ ] |
+| PlantInspector | `inspector/inspector.py` | 4 项规则引擎巡检（天气/养护/生长/病虫害）—— 仅用于后台自动化 | [ ] | [ ] |
 | InspectionReport | `inspector/report.py` | 单株报告生成 + 多株聚合 | [ ] | [ ] |
-| plant_project 工具 | `tools/plant_project.py` | NAT Tool: create/list/inspect/remove 项目 | [ ] | [ ] |
-| 定时巡检脚本 | `scripts/plant_inspector_cron.py` | cron 后台巡检 + 推送 | [ ] | [ ] |
+| plant_project 工具 | `tools/plant_project.py` | create/list/inspect/remove/toggle/set_care_schedule 项目 | [ ] | [ ] |
+| **plant_inspect_tools** | `tools/plant_inspect_tools.py` | **4 个 LLM 可调用巡检数据工具**（见下表） | [ ] | [ ] |
+| 植物巡检 Skill | `skills/bundled/plant_inspection/SKILL.md` | 巡检工作流指引，LLM 按步骤调用数据工具并分析 | [ ] | [ ] |
+| 定时巡检脚本 | `scripts/plant_inspector_cron.py` | cron 后台巡检 + 推送（备用） | [ ] | [ ] |
+
+#### LLM 巡检数据工具 (`plant_inspect_tools`)
+
+这些工具返回**原始数据**，由 LLM 做专业分析和判断（取代硬编码 if-else）：
+
+| 工具名 | 输入 | 返回数据 |
+|--------|------|---------|
+| `get_weather_assessment` | 植物名 | 当前天气 + 3 天预报（温度/风速/降水/天气代码） |
+| `get_care_status` | 植物名 | 浇水/施肥记录天数 vs 设定间隔、推荐肥料、免施肥月份 |
+| `get_growth_status` | 植物名 | 种植天数、生长阶段、事件记录 |
+| `get_pest_risk_factors` | 植物名 | 温湿度、降雨预报、生长阶段、历史病虫害记录 |
+
+#### 巡检双通道设计
+
+| 通道 | 调用者 | 引擎 | 特点 |
+|------|--------|------|------|
+| **LLM 工具通道** | 用户对话时 | `plant_inspect_tools` → LLM 分析 | 灵活、可结合植物知识、给个性化建议 |
+| **规则引擎通道** | 后台定时/紧急 | `PlantInspector` 硬编码规则 | 无需 LLM、低成本、适合大规模自动化 |
 
 #### 4 项巡检内容
 
 | 检查项 | 数据来源 | 输出 |
 |--------|---------|------|
-| 天气评估 | Open-Meteo API（未来 3 天） | 极端天气预警 + 操作建议 |
+| 天气评估 | Open-Meteo API（未来 3 天） | 极端天气预警（含冰雹/大风/强降水 critical 判定） |
 | 养护日程 | 生长日志事件分析 | 距上次浇水/施肥天数 + 待办提醒 |
 | 生长分析 | `data/garden/{plant}/journal.md` | 阶段评估 + 记录频率检查 |
 | 病虫害风险 | 天气条件 + 生长阶段 | 风险等级（低/中/高）+ 预防措施 |
+
+#### 天气 critical 判定规则
+
+| 条件 | 级别 |
+|------|------|
+| WMO 冰雹代码 (96, 99) | critical |
+| 风速 > 75 km/h | critical |
+| 降水 > 50mm | critical |
+| 最低温 < 0°C | critical |
+| 最高温 > 40°C | critical |
+| 风速 > 50 km/h / 降水 > 30mm / 最低温 < 5°C / 最高温 > 35°C | warning |
 
 #### Wrapper 意图检测
 
@@ -193,14 +241,41 @@ scripts/plant_inspector_cron.py (后台定时)
 |-------------|---------|
 | "种了/种植了/播种了 XXX" | Agent 调用 `create_plant_project` + `log_event` |
 | "巡检/检查一下/怎么样了" | 强制执行全部巡检 |
+| "关闭 XX 的巡检" | Agent 调用 `toggle_plant_inspection` |
 | 其他（有活跃项目且已到巡检时间） | 静默巡检并注入结果 |
 | 其他（无项目或未到时间） | 跳过巡检 |
 
-#### 定时巡检 cron 配置
+#### 后台自动巡检配置
+
+Agent 服务启动后自动开启双轨后台巡检：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `background_inspection_enabled` | 是否启用 | `true` |
+| `daily_digest_hour` | 每日汇总推送时刻（24h 制） | `8` |
+| `emergency_check_interval_minutes` | 紧急天气轮询间隔 | `120`（2 小时） |
+
+推送配置：编辑 `data/garden/proactive_monitor.yaml`
+
+```yaml
+enabled: true
+push:
+  mode: ntfy          # 或 webhook
+  ntfy:
+    topic: my-plants  # ntfy 话题名
+    server: https://ntfy.sh
+  # 或
+  # mode: webhook
+  # webhook:
+  #   url: https://your-webhook-url
+```
+
+#### 备用：外部 cron 脚本
+
+也可用独立脚本 + 系统 cron 运行（适用于不开 Agent 服务的场景）：
 
 ```bash
-# 每天 7:00、12:00、19:00 执行
-0 7,12,19 * * * cd /path/to/plant-care-agent && /path/to/python scripts/plant_inspector_cron.py
+0 7,12,19 * * * cd /path/to/plant-care-agent && python scripts/plant_inspector_cron.py
 ```
 
 ---
@@ -300,6 +375,7 @@ scripts/plant_inspector_cron.py (后台定时)
 
 | Skill | 文件 | 功能 | 已测试 | 功能正常 |
 |-------|------|------|--------|---------|
+| **植物巡检** | `skills/bundled/plant_inspection/SKILL.md` | **全面巡检 Skill：逐步调用 4 个数据工具 → LLM 分析 → 综合报告** | [ ] | [ ] |
 | 阳台蔬菜 | `skills/bundled/balcony_vegetables/SKILL.md` | 阳台种菜指导 | [ ] | [ ] |
 | 生长记录 | `skills/bundled/growth_logging/SKILL.md` | 记录流程说明 | [ ] | [ ] |
 | 病虫诊断 | `skills/bundled/pest_diagnosis/SKILL.md` | 病虫害排查流程 | [ ] | [ ] |
@@ -359,8 +435,9 @@ SensorHub (hub.py)
 | 轮次日志 | `chat_round_log.py` | 每轮请求/响应完整记录到 .md | [ ] | [ ] |
 | 日志系统 | `logging_setup.py` + `md_log_file.py` | Markdown 格式文件日志 | [ ] | [ ] |
 | Skills 注册 | `skills/registry.py` | 多路径 Skill 发现与索引 | [ ] | [ ] |
-| 提示词加载 | `prompts/loader.py` | Markdown 拼接 → system_prompt | [ ] | [ ] |
-| 配置组装 | `scripts/assemble_config.py` | 提示词 MD → YAML | [ ] | [ ] |
+| 提示词加载 | `prompts/loader.py` | `get_system_prompt`(ReAct 格式) + `get_domain_prompt`(域知识注入) | [ ] | [ ] |
+| 配置组装 | `scripts/assemble_config.py` | prompts/ → `.generated/` config（源 config 不可修改） | [ ] | [ ] |
+| 一键启动 | `scripts/start.sh` | 自动 assemble + NAT serve（`--farm` 切换模式） | [ ] | [ ] |
 | TUI 客户端 | `scripts/claude_style_chat.py` | Rich + prompt-toolkit 终端对话 | [ ] | [ ] |
 
 ---
@@ -369,12 +446,16 @@ SensorHub (hub.py)
 
 | # | 严重程度 | 模块 | 描述 | 状态 |
 |---|---------|------|------|------|
-| 1 | P2 | `farm_report.py` | `generate_zone_report` 查找图表时在 `report_dir` 下查找 `*_trend.png`，但图表输出在 `charts_dir`，导致图表链接永远找不到 | 待修复 |
-| 2 | P3 | `hub.py` | `_build_ctx` 中 `get_latest` 取到后未传入 `SensorContext`，属于死代码 | 待修复 |
-| 3 | P3 | `farm_automation.py` | `pest_control` 和 `harvest` 操作的 effects 为空字典，执行后传感器无任何变化 | 待评估 |
-| 4 | P2 | `hub.py` | 天气数据未自动同步，`set_weather` 需外部调用，否则传感器使用默认值（与真实天气无关） | 待修复 |
+| 1 | P2 | `farm_report.py` | `generate_zone_report` 查找图表时在 `report_dir` 下查找 `*_trend.png`，但图表输出在 `charts_dir`，导致图表链接永远找不到 | ✅ 已修复 |
+| 2 | P3 | `hub.py` | `_build_ctx` 中 `get_latest` 取到后未传入 `SensorContext`，属于死代码 | ✅ 已修复 |
+| 3 | P3 | `farm_automation.py` | `pest_control` 和 `harvest` 操作的 effects 为空字典，执行后传感器无任何变化 | ✅ 已修复 |
+| 4 | P2 | `hub.py` | 天气数据未自动同步，`set_weather` 需外部调用，否则传感器使用默认值（与真实天气无关） | ✅ 已修复 |
 | 5 | P3 | 启动流程 | 无交互式模式选择，需手动指定 `--config_file` 路径 | 待开发 |
 | 6 | P1 | `.venv` | 虚拟环境解释器指向旧路径 `/Users/sijie.guo/flower/`，需重建 | 待修复 |
+| 7 | P1 | `plant_memory_wrapper.py` | `_seconds_until_hour` 月末 `replace(day=day+1)` 崩溃 | ✅ 已修复 |
+| 8 | P3 | `inspector.py` | `_current_season()` 定义后从未使用，季节信息未注入巡检 | ✅ 已修复 |
+| 9 | P3 | 多文件 | `WMO_WEATHER_CODES` 重复定义于 `weather_forecast.py` 和 `plant_inspect_tools.py` | ✅ 已修复 |
+| 10 | P3 | `plant_memory_wrapper.py` | 全局变量 `_bg_daily_task`/`_bg_emergency_task` 在多实例场景下不安全 | ✅ 已修复 |
 
 ---
 
@@ -426,6 +507,9 @@ python scripts/claude_style_chat.py
 |------|--------|------|
 | 2026-04-07 | AI | 初始功能清单创建 |
 | 2026-04-07 | AI | 新增植物子 Agent 巡检系统（inspector/ + plant_project 工具 + cron 脚本） |
+| 2026-04-07 | AI | 巡检工具化重构：新增 `plant_inspect_tools`（4 个 LLM 可调用数据工具）+ 植物巡检 Skill；Prompt 系统重构（prompts/ 文件 → wrapper 注入，config.yml 瘦身）；`set_care_schedule` 工具让 LLM 动态设置养护参数 |
+| 2026-04-07 | AI | Prompt 管理彻底统一到 prompts/ 目录：config.yml 中 system_prompt 改为占位符 `__LOAD_FROM_PROMPTS__`，assemble_config.py 生成运行时 config 到 `.generated/`，新增 `start.sh` 一键启动 |
+| 2026-04-07 | AI | Bug 修复批次：修复 8 个 bug（月末日期崩溃、图表路径错误、天气自动同步、季节信息注入、WMO 代码去重、操作效果补全、后台任务安全、hub 死代码） |
 
 ---
 

@@ -213,7 +213,7 @@ async def farm_report_function(config: FarmReportConfig, _builder: Builder):
             lines.append("该周期内无操作记录。")
         lines.append("")
 
-        charts_dir = Path(config.output_dir)
+        charts_dir = Path(config.farm_dir) / "charts"
         chart_files = [
             f"{zone_id}_trend.png",
             f"{zone_id}_dashboard.png",

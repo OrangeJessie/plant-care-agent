@@ -27,4 +27,6 @@ data/farm/charts/
 data/farm/reports/
 data/farm/farm_config.yaml
 data/farm/FARM_INDEX.md
+# assemble_config.py 生成的运行时 config（含展开后的 system_prompt）
+src/plant_care_agent/configs/.generated/
 .DS_Store

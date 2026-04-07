@@ -24,9 +24,16 @@ class PlantProject:
     inspect_interval_hours: float = 12.0
     last_inspected: str = ""
     active: bool = True
+    inspection_enabled: bool = True
+    # LLM 根据植物特性设定的养护参数
+    fert_interval_days: int = 0          # 施肥间隔天数，0 = 未设置（用默认 14 天）
+    fert_type: str = ""                  # 推荐肥料类型，如 "酸性肥料（硫酸亚铁）"
+    fert_dormant_months: str = ""        # 免施肥月份，逗号分隔，如 "11,12,1,2"
+    water_interval_days: int = 0         # 浇水间隔天数，0 = 未设置（用默认逻辑）
+    pest_interval_days: int = 0          # 驱虫/预防间隔天数，0 = 未设置（用默认 30 天）
 
     def needs_inspection(self) -> bool:
-        if not self.active:
+        if not self.active or not self.inspection_enabled:
             return False
         if not self.last_inspected:
             return True
@@ -137,8 +144,47 @@ class PlantProjectManager:
             proj.mark_inspected()
             self._save()
 
+    def set_care_schedule(
+        self,
+        name: str,
+        *,
+        fert_interval_days: int = 0,
+        fert_type: str = "",
+        fert_dormant_months: str = "",
+        water_interval_days: int = 0,
+        pest_interval_days: int = 0,
+    ) -> PlantProject | None:
+        """由 LLM 调用，根据植物特性设定养护参数。"""
+        proj = self.get_project(name)
+        if proj is None:
+            return None
+        if fert_interval_days:
+            proj.fert_interval_days = fert_interval_days
+        if fert_type:
+            proj.fert_type = fert_type
+        if fert_dormant_months:
+            proj.fert_dormant_months = fert_dormant_months
+        if water_interval_days:
+            proj.water_interval_days = water_interval_days
+        if pest_interval_days:
+            proj.pest_interval_days = pest_interval_days
+        self._save()
+        return proj
+
+    def toggle_inspection(self, name: str, enabled: bool) -> PlantProject | None:
+        proj = self.get_project(name)
+        if proj is None:
+            return None
+        proj.inspection_enabled = enabled
+        self._save()
+        return proj
+
+    def inspectable_projects(self) -> list[PlantProject]:
+        """所有 active 且 inspection_enabled 的项目。"""
+        return [p for p in self.list_projects(active_only=True) if p.inspection_enabled]
+
     def projects_needing_inspection(self) -> list[PlantProject]:
-        return [p for p in self.list_projects(active_only=True) if p.needs_inspection()]
+        return [p for p in self.inspectable_projects() if p.needs_inspection()]
 
     def reload(self) -> None:
         """Force reload from disk (for cron scripts)."""
