@@ -15,19 +15,28 @@
   python scripts/claude_style_chat.py --no-server        # 不自动启动服务（连接已运行的服务）
 
 环境变量:
-  NAT_CHAT_URL     默认 http://localhost:8000/v1/chat/completions
-  NAT_USER_ID      可选 X-User-ID（对话记忆分用户）
-  NAT_SESSION_ID   可选 X-Session-ID（同用户下多路会话）
-  NAT_FOCUS_PLANT  可选，初始 X-Focus-Plant（与 growth_journal 植物名一致，仅个人模式）
+  NAT_CHAT_URL       默认 http://localhost:8000/v1/chat/completions
+  NAT_USER_ID        可选 X-User-ID（对话记忆分用户）
+  NAT_SESSION_ID     可选 X-Session-ID（同用户下多路会话）
+  NAT_FOCUS_PLANT    可选，初始 X-Focus-Plant（与 growth_journal 植物名一致，仅个人模式）
   PLANT_CARE_GARDEN  可选，花园目录（默认 data/garden，与 proactive_monitor.yaml 一致）
   PLANT_CARE_LOCATION  可选，城市名（/proactive 写配置时作为默认 location）
+
+图片传输环境变量（/image 命令）:
+  NAT_IMAGE_MODE     传输模式：path（默认）/ base64 / multipart / url
+  NAT_IMAGE_MAXPX    压缩后长边最大像素（默认 1024）
+  NAT_IMAGE_QUALITY  JPEG 压缩质量（默认 75）
+  NAT_IMAGE_TIMEOUT  图片分析超时秒数（默认 1800，视觉模型推理较慢）
 """
 
 from __future__ import annotations
 
 import atexit
+import base64
+import io
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -36,6 +45,18 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+try:
+    from PIL import Image as _PILImage
+    _PILLOW_AVAILABLE = True
+except ImportError:
+    _PILLOW_AVAILABLE = False
+
+_EXT_MIME: dict[str, str] = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif",
+}
+_SUPPORTED_EXTS = frozenset(_EXT_MIME)
 
 _ROOT = Path(__file__).resolve().parents[1]
 _SRC = _ROOT / "src"
@@ -172,6 +193,87 @@ def _extract_assistant_text(data: dict) -> str:
     return str(content)
 
 
+# ---------------------------------------------------------------------------
+# 图片工具函数
+# ---------------------------------------------------------------------------
+
+def _compress_image_bytes(img_path: Path, max_long_edge: int, quality: int) -> tuple[bytes, str]:
+    """压缩图片，返回 (压缩后字节, mime_type)。未安装 Pillow 时直接返回原始字节。"""
+    suffix = img_path.suffix.lower()
+    mime = _EXT_MIME.get(suffix, "image/jpeg")
+    if not _PILLOW_AVAILABLE:
+        return img_path.read_bytes(), mime
+    with _PILImage.open(img_path) as img:
+        if img.mode == "RGBA":
+            pass  # 保持 PNG 透明通道
+        elif img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        w, h = img.size
+        if max(w, h) > max_long_edge:
+            scale = max_long_edge / max(w, h)
+            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), _PILImage.LANCZOS)
+        buf = io.BytesIO()
+        if img.mode == "RGBA":
+            img.save(buf, format="PNG", optimize=True)
+            return buf.getvalue(), "image/png"
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        return buf.getvalue(), "image/jpeg"
+
+
+def _image_to_data_url(img_path: Path, max_long_edge: int, quality: int) -> tuple[str, int, int]:
+    """压缩 + Base64 编码，返回 (data URL, 原始字节数, 压缩后字节数)。"""
+    original = img_path.stat().st_size
+    data, mime = _compress_image_bytes(img_path, max_long_edge, quality)
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}", original, len(data)
+
+
+def _upload_multipart(server_base: str, img_path: Path,
+                      max_long_edge: int, quality: int, timeout: float) -> str:
+    """将图片以 multipart/form-data 上传到 NAT /static/ 端点，返回可访问的 URL。"""
+    import uuid
+    data, mime = _compress_image_bytes(img_path, max_long_edge, quality)
+    ext = ".jpg" if "jpeg" in mime else (".png" if "png" in mime else img_path.suffix)
+    rel_path = f"plant_images/{img_path.stem}_{uuid.uuid4().hex[:8]}{ext}"
+    put_url = f"{server_base.rstrip('/')}/static/{rel_path}"
+
+    boundary = uuid.uuid4().hex
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{Path(rel_path).name}"\r\n'
+        f"Content-Type: {mime}\r\n\r\n"
+    ).encode() + data + f"\r\n--{boundary}--\r\n".encode()
+
+    req = urllib.request.Request(
+        put_url, data=body, method="PUT",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        resp.read()
+    return put_url
+
+
+def _parse_image_flags(arg: str) -> tuple[str, int, int, str]:
+    """解析 --mode / --maxpx / --quality 标志，返回 (mode, maxpx, quality, 剩余参数)。"""
+    mode = os.environ.get("NAT_IMAGE_MODE", "path")
+    maxpx = int(os.environ.get("NAT_IMAGE_MAXPX", "1024"))
+    quality = int(os.environ.get("NAT_IMAGE_QUALITY", "75"))
+
+    def _pop(pattern: str) -> str | None:
+        nonlocal arg
+        m = re.search(pattern, arg)
+        if m:
+            arg = (arg[:m.start()] + arg[m.end():]).strip()
+            return m.group(1)
+        return None
+
+    v = _pop(r"--mode\s+(\S+)");    mode    = v if v else mode
+    v = _pop(r"--maxpx\s+(\d+)");   maxpx   = int(v) if v else maxpx
+    v = _pop(r"--quality\s+(\d+)"); quality = int(v) if v else quality
+    return mode, maxpx, quality, arg.strip()
+
+
 def _select_mode(console: Console) -> str:
     """交互式选择运行模式。"""
     console.print()
@@ -306,6 +408,7 @@ def main() -> None:
     session_id = os.environ.get("NAT_SESSION_ID", "").strip()
     focus_plant = os.environ.get("NAT_FOCUS_PLANT", "").strip() if mode == "personal" else ""
     timeout = float(os.environ.get("NAT_CHAT_TIMEOUT", "600"))
+    image_timeout = float(os.environ.get("NAT_IMAGE_TIMEOUT", "1800"))
     conversation_reset_next = False
 
     messages: list[dict[str, str]] = []
@@ -356,14 +459,22 @@ def main() -> None:
     import re as _re
     _ACTION_RE = _re.compile(r"^Action:\s*(.+)", _re.MULTILINE)
 
-    def do_send(user_text: str, spinner: str = "思考中…") -> None:
+    def do_send(user_text: str, spinner: str = "思考中…", *, image_request: bool = False) -> None:
+        """发送消息。image_request=True 时使用 image_timeout（默认 1800s），
+        避免视觉模型推理时间过长导致客户端超时。
+        """
         nonlocal conversation_reset_next
+        req_timeout = image_timeout if image_request else timeout
         messages.append({"role": "user", "content": user_text})
 
         with console.status(f"[bold cyan]{spinner}[/bold cyan]", spinner="dots"):
             try:
-                http_status, raw = _post_chat(
-                    url, messages, user_id, focus_plant, timeout,
+                status, raw = _post_chat(
+                    url,
+                    messages,
+                    user_id,
+                    focus_plant,
+                    req_timeout,
                     session_id=session_id,
                     conversation_reset=conversation_reset_next,
                 )
@@ -513,31 +624,126 @@ def main() -> None:
             if cmd == "/image":
                 if not arg:
                     console.print(
-                        "[yellow]用法:[/yellow] /image <图片路径> [说明文字]\n"
-                        "[dim]示例: /image ~/Desktop/rose.jpg 叶子发黄是什么原因？[/dim]\n"
+                        "[bold]/image 用法[/bold]\n"
+                        "  /image [--mode MODE] [--maxpx N] [--quality N] <路径或URL> [说明]\n\n"
+                        "[bold]传输模式（--mode）[/bold]\n"
+                        "  [cyan]path[/cyan]       （默认）路径传给 Agent 工具，Agent 自行读文件\n"
+                        "  [cyan]base64[/cyan]     压缩→Base64 嵌入多模态消息（局域网/小图）\n"
+                        "  [cyan]multipart[/cyan]  压缩→二进制上传到 NAT /static/，消息传 URL（推荐大图）\n"
+                        "  [cyan]url[/cyan]        直接传 http/https 链接，零上传\n\n"
+                        "[dim]示例:\n"
+                        "  /image ~/Desktop/rose.jpg 叶子发黄\n"
+                        "  /image --mode base64 rose.jpg\n"
+                        "  /image --mode multipart --maxpx 800 rose.jpg 请诊断\n"
+                        "  /image --mode url https://example.com/plant.jpg[/dim]\n"
                     )
                     continue
+
+                mode_img, maxpx, quality, arg_rest = _parse_image_flags(arg)
+
+                # ── url 模式：直接传 http 链接 ──────────────────────────────
+                if mode_img == "url":
+                    try:
+                        parts_url = shlex.split(arg_rest)
+                    except ValueError:
+                        parts_url = arg_rest.split(maxsplit=1)
+                    if not parts_url or not parts_url[0].startswith(("http://", "https://")):
+                        console.print("[red]url 模式需要提供 http/https 链接[/red]\n")
+                        continue
+                    img_url_val = parts_url[0]
+                    img_desc = " ".join(parts_url[1:]).strip() or "请分析这张植物照片，诊断健康状况"
+                    console.print(f"[dim]URL 模式:[/dim] [cyan]{img_url_val}[/cyan]\n")
+                    # 告知 react agent 调用工具，URL 作为 image_path 传入
+                    do_send(
+                        f"{img_desc}\n请调用 plant_image_analyzer 工具，image_path 参数为：{img_url_val}",
+                        "分析图片中…",
+                        image_request=True,
+                    )
+                    continue
+
+                # ── 本地文件模式（path / base64 / multipart）────────────────
                 try:
-                    img_parts = shlex.split(arg)
+                    img_parts = shlex.split(arg_rest)
                 except ValueError:
-                    img_parts = arg.split(maxsplit=1)
+                    img_parts = arg_rest.split(maxsplit=1)
                 img_path_str = img_parts[0]
-                img_desc = " ".join(img_parts[1:]).strip() if len(img_parts) > 1 else "请分析这张植物照片，诊断健康状况"
+                img_desc = " ".join(img_parts[1:]).strip() or "请分析这张植物照片，诊断健康状况"
                 img_path = Path(img_path_str).expanduser().resolve()
                 if not img_path.exists():
                     console.print(f"[red]文件不存在:[/red] {img_path}\n")
                     continue
-                if img_path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+                if img_path.suffix.lower() not in _SUPPORTED_EXTS:
                     console.print(
-                        f"[red]不支持的格式:[/red] {img_path.suffix}，"
-                        "请使用 JPG / PNG / WebP / GIF\n"
+                        f"[red]不支持的格式:[/red] {img_path.suffix}，请使用 JPG/PNG/WebP/GIF\n"
                     )
                     continue
-                console.print(f"[dim]已附加图片:[/dim] [cyan]{img_path.name}[/cyan]\n")
-                do_send(
-                    f"{img_desc}\n请调用 plant_image_analyzer 工具，image_path 参数为：{img_path}",
-                    "分析图片中…",
-                )
+
+                if mode_img == "path":
+                    console.print(f"[dim]path 模式:[/dim] [cyan]{img_path.name}[/cyan]\n")
+                    do_send(
+                        f"{img_desc}\n请调用 plant_image_analyzer 工具，image_path 参数为：{img_path}",
+                        "分析图片中…",
+                        image_request=True,
+                    )
+
+                elif mode_img in ("base64", "b64"):
+                    if not _PILLOW_AVAILABLE:
+                        console.print(
+                            "[yellow]Pillow 未安装，将直接 Base64 编码原图（体积较大）。"
+                            "建议: pip install Pillow[/yellow]\n"
+                        )
+                    # base64 模式：压缩后上传到服务端 /static/，再以 URL 形式传给工具。
+                    # 不直接把 data URL 作为工具参数，避免 LLM 上下文溢出。
+                    from urllib.parse import urlparse as _urlparse
+                    _p = _urlparse(url)
+                    server_base = f"{_p.scheme}://{_p.netloc}"
+                    try:
+                        img_url_val = _upload_multipart(server_base, img_path, maxpx, quality, 30.0)
+                        console.print(
+                            f"[dim]base64→multipart 模式:[/dim] [cyan]{img_path.name}[/cyan]  "
+                            f"→ [cyan]{img_url_val}[/cyan]\n"
+                        )
+                        do_send(
+                            f"{img_desc}\n请调用 plant_image_analyzer 工具，image_path 参数为：{img_url_val}",
+                            "分析图片中…",
+                            image_request=True,
+                        )
+                    except Exception as exc:
+                        # 上传失败时 fallback 到 path 模式（本地服务器场景）
+                        console.print(
+                            f"[yellow]上传失败（{exc}），回退到 path 模式[/yellow]\n"
+                        )
+                        do_send(
+                            f"{img_desc}\n请调用 plant_image_analyzer 工具，image_path 参数为：{img_path}",
+                            "分析图片中…",
+                            image_request=True,
+                        )
+
+                elif mode_img == "multipart":
+                    from urllib.parse import urlparse as _urlparse
+                    _p = _urlparse(url)
+                    server_base = f"{_p.scheme}://{_p.netloc}"
+                    console.print(
+                        f"[dim]multipart 模式:[/dim] [cyan]{img_path.name}[/cyan] "
+                        f"→ {server_base}/static/plant_images/\n"
+                    )
+                    try:
+                        img_url_val = _upload_multipart(server_base, img_path, maxpx, quality, 30.0)
+                    except Exception as exc:
+                        console.print(f"[red]上传失败:[/red] {exc}\n")
+                        continue
+                    console.print(f"[dim]已上传:[/dim] [cyan]{img_url_val}[/cyan]\n")
+                    # 上传成功后告知 react agent 调用工具，URL 作为 image_path 传入
+                    do_send(
+                        f"{img_desc}\n请调用 plant_image_analyzer 工具，image_path 参数为：{img_url_val}",
+                        "分析图片中…",
+                        image_request=True,
+                    )
+
+                else:
+                    console.print(
+                        f"[red]未知模式:[/red] {mode_img}，可用: path / base64 / multipart / url\n"
+                    )
                 continue
             if cmd == "/mode":
                 console.print(f"[dim]当前模式:[/dim] [cyan]{mode}[/cyan]\n")
@@ -549,7 +755,15 @@ def main() -> None:
                     "  /mode                        查看当前运行模式\n"
                     "  /clear                       清空本地历史并下一跳重置服务端对话记忆\n"
                     "  /url URL                     切换接口地址\n"
-                    "  /image <路径> [说明]          上传本地图片进行植物诊断\n"
+                    "  /image <路径> [说明]          path 模式（默认）：路径传给 Agent 工具\n"
+                    "\n"
+                    "[bold]/image 传输模式[/bold]\n"
+                    "  /image <路径> [说明]                        path 模式（默认）\n"
+                    "  /image --mode base64 <路径> [说明]          压缩→Base64 嵌入消息\n"
+                    "  /image --mode multipart <路径> [说明]       压缩→上传 NAT /static/，消息传 URL\n"
+                    "  /image --mode url <链接> [说明]             直接传 http/https 链接\n"
+                    "  压缩选项: --maxpx N（默认1024）  --quality N（默认75）\n"
+                    "  全局默认: NAT_IMAGE_MODE / NAT_IMAGE_MAXPX / NAT_IMAGE_QUALITY\n"
                 )
                 if mode == "personal":
                     help_text += (

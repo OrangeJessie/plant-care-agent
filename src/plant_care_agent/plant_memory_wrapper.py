@@ -328,7 +328,17 @@ def _extract_last_user_text(msgs: list) -> str:
     for m in reversed(msgs):
         content = getattr(m, "content", None) or ""
         role = getattr(m, "role", None)
-        if role and "user" in str(role).lower() and content.strip():
+        if not (role and "user" in str(role).lower()):
+            continue
+        if isinstance(content, list):
+            # 多模态消息：提取所有 text 部分拼接
+            text = " ".join(
+                p.get("text", "") if isinstance(p, dict) else (getattr(p, "text", None) or "")
+                for p in content
+            ).strip()
+            if text:
+                return text
+        elif str(content).strip():
             return str(content).strip()
     return ""
 

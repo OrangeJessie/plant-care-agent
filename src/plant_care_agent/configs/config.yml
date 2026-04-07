@@ -10,6 +10,7 @@ functions:
   plant_image_analyzer:
     _type: plant_image_analyzer
     vision_llm_name: vision_llm
+    internal_base_url: "http://localhost:9000"  # 工具内部下载图片时使用，避免 hairpin NAT 问题
   current_datetime:
     _type: current_datetime
   web_search:
@@ -23,9 +24,12 @@ functions:
   plant_chart:
     _type: plant_chart
     garden_dir: ./data/garden
+    output_dir: ./data/charts
   growth_slides:
     _type: growth_slides
     garden_dir: ./data/garden
+    charts_dir: ./data/charts
+    output_dir: ./data/slides
   skill_tools:
     _type: skill_tools
     load_max_chars: 12000
@@ -64,13 +68,10 @@ functions:
     - plant_project
     - plant_inspect_tools
     llm_name: local_llm
+    use_native_tool_calling: false
     verbose: true
     max_tool_calls: 20
-    parse_agent_response_max_retries: 5
-    # system_prompt 由 prompts/ 目录统一管理，启动前自动组装到 .generated/ 目录。
-    # 请勿手动编辑此字段。修改 prompts/*.md 后运行: python scripts/assemble_config.py --all
-    # 或直接使用 ./scripts/start.sh 启动（自动 assemble）。
-    system_prompt: __LOAD_FROM_PROMPTS__
+    parse_agent_response_max_retries: 10
 function_groups:
   growth_journal:
     _type: growth_journal
@@ -112,3 +113,23 @@ workflow:
   conversation_store_dir: ./data/conversations
   conversation_auto_incremental: true
   description: Plant care workflow with sub-agent inspection and injected plant journals
+
+# ── 静态文件存储（支持 multipart 图片上传）─────────────────────────────────
+# 启用后 NAT 自动注册以下路由：
+#   PUT    /static/{path}  上传文件（upsert，不冲突）
+#   GET    /static/{path}  下载/访问文件
+#   POST   /static/{path}  上传（key 已存在返回 409）
+#   DELETE /static/{path}  删除文件
+#
+# 切换持久化存储只需改 object_stores.plant_image_store._type：
+#   _type: s3      需安装 nvidia_nat_s3，配置 endpoint_url / access_key / secret_key / bucket_name
+#   _type: redis   需安装 nvidia_nat_redis，配置 host / port / db / bucket_name
+# ─────────────────────────────────────────────────────────────────────────────
+general:
+  front_end:
+    _type: fastapi
+    object_store: plant_image_store  # 引用下方 object_stores 中的名字
+
+object_stores:
+  plant_image_store:
+    _type: in_memory  # 内存存储，无需额外依赖；重启后图片清空
