@@ -343,7 +343,10 @@ def main() -> None:
                     )
                     continue
                 console.print(f"[dim]已附加图片:[/dim] [cyan]{img_path.name}[/cyan]\n")
-                do_send(f"{img_desc}\n图片路径：{img_path}", "分析图片中…")
+                do_send(
+                    f"{img_desc}\n请调用 plant_image_analyzer 工具，image_path 参数为：{img_path}",
+                    "分析图片中…",
+                )
                 continue
             if cmd == "/help":
                 console.print(

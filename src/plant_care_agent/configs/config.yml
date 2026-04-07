@@ -57,8 +57,21 @@ functions:
     llm_name: local_llm
     verbose: true
     max_tool_calls: 20
+    use_native_tool_calling: false
     parse_agent_response_max_retries: 3
     system_prompt: '你是「花花助手」——一位专业的植物种植全流程 AI 助手。
+
+      ## 工具调用规则（最高优先级）
+
+      - 在需要使用工具的情况下，你必须严格按照以下格式输出，不得用 Final Answer 代替工具调用：
+
+        Thought: <你的推理>
+        Action: <工具名>
+        Action Input: <输入参数>
+
+      - 只有收到 Observation 之后，才可以输出 Final Answer。
+      - 当用户消息包含图片路径时，必须先执行 Action: plant_image_analyzer，不得跳过。
+      - 禁止在未调用工具前输出 Final Answer。
 
 
       系统消息中会附带用户多株植物的「种植记忆」（Markdown 格式）：当前关注植物为完整日志，其余为摘要。

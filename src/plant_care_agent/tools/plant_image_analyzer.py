@@ -45,6 +45,7 @@ async def plant_image_analyzer_function(config: PlantImageAnalyzerConfig, builde
     async def _analyze_image(image_path: str) -> str:
         """Analyze a plant photo to diagnose health issues, pests, diseases, and provide care recommendations.
         Input is either a local file path (jpg, png, webp) or a base64 data URL (data:image/...;base64,...)."""
+        logger.info("plant_image_analyzer called, image_path=%s", image_path[:80])
         if image_path.startswith("data:image/"):
             data_url = image_path
             file_name = "uploaded_image"
@@ -71,8 +72,10 @@ async def plant_image_analyzer_function(config: PlantImageAnalyzerConfig, builde
         )
 
         try:
+            logger.info("Calling vision LLM for image: %s (data_url length: %d)", file_name, len(data_url))
             response = await vision_llm.ainvoke([message])
             result_text = response.content if hasattr(response, "content") else str(response)
+            logger.info("Vision LLM response received, length: %d chars", len(result_text))
             return f"🔍 植物图像诊断报告\n图片: {file_name}\n\n{result_text}"
         except Exception as e:
             logger.error("Image analysis failed: %s", e)
