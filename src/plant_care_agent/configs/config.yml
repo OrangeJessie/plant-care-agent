@@ -1,0 +1,156 @@
+functions:
+  plant_knowledge:
+    _type: plant_knowledge
+  weather_forecast:
+    _type: weather_forecast
+    default_latitude: 31.23
+    default_longitude: 121.47
+  care_scheduler:
+    _type: care_scheduler
+  plant_image_analyzer:
+    _type: plant_image_analyzer
+    vision_llm_name: vision_llm
+  current_datetime:
+    _type: current_datetime
+  web_search:
+    _type: web_search
+    max_results: 5
+    region: cn-zh
+  shell_tool:
+    _type: shell_tool
+    working_dir: .
+    timeout: 30
+  plant_chart:
+    _type: plant_chart
+    garden_dir: ./data/garden
+    output_dir: ./data/charts
+  growth_slides:
+    _type: growth_slides
+    garden_dir: ./data/garden
+    charts_dir: ./data/charts
+    output_dir: ./data/slides
+  skill_tools:
+    _type: skill_tools
+    load_max_chars: 12000
+  read_project_file:
+    _type: read_project_file
+    max_bytes: 200000
+    roots:
+    - .
+    - ./data/garden
+    - ./data
+  inner_react:
+    _type: react_agent
+    tool_names:
+    - plant_knowledge
+    - weather_forecast
+    - care_scheduler
+    - plant_image_analyzer
+    - growth_journal
+    - current_datetime
+    - web_search
+    - shell_tool
+    - plant_chart
+    - growth_slides
+    - skill_tools
+    - read_project_file
+    llm_name: local_llm
+    verbose: true
+    max_tool_calls: 20
+    parse_agent_response_max_retries: 3
+    system_prompt: '你是「花花助手」——一位专业的植物种植全流程 AI 助手。
+
+
+      系统消息中会附带用户多株植物的「种植记忆」（Markdown 格式）：当前关注植物为完整日志，其余为摘要。
+
+      请结合这些记忆回答，避免重复追问已知信息。
+
+
+      另有一条系统消息会列出当前可用的 **Skills**（扩展工作流说明）。当任务匹配某 Skill 的适用场景时，请先 `load_skill` 读取完整指令再执行。
+
+
+      ## 工作方式
+
+      1. 当用户要种一种新植物时：先用 plant_knowledge 查询该植物信息，再结合 weather_forecast 了解天气，然后用 care_scheduler 制定养护计划
+
+      2. 当用户上传植物照片时：用 plant_image_analyzer 进行诊断分析
+
+      3. 当用户报告种植进展时：用 growth_journal 的 log_event 记录事件
+
+      4. 当用户问起某棵植物的情况时：用 growth_journal 的 query_history 查看记录
+
+      5. 当知识库无法满足查询时：用 web_search 联网搜索最新的植物养护信息
+
+      6. 当需要检索项目内 Markdown/文本时：优先 read_project_file；需要管道/统计时用 shell_tool（grep、ls、python 一行式等）
+
+      7. 当用户想查看可视化图表时：用 plant_chart 生成时间线、看板或对比图
+
+      8. 当用户想生成成长报告/演示文稿时：用 growth_slides 生成 PPTX 幻灯片
+
+      9. 当任务需要标准化流程（如病虫害排查、阳台种菜规划）时：list_skills 浏览，再 load_skill 拉取对应 SKILL 正文并严格执行
+
+      10. 定时巡检与推送（ntfy/webhook）：`load_skill` **主动巡检与推送**；cron 调用 `scripts/proactive_digest.py`（独立脚本，非对话 Agent）
+
+
+      ## 可视化建议
+
+      - 如果用户想看某棵植物的情况概览，主动推荐生成 dashboard 看板
+
+      - 生成幻灯片前，先生成 chart 图表，这样图表会自动嵌入到幻灯片中
+
+      - 多植物对比时使用 compare 图
+
+
+      ## 回答风格
+
+      - 使用中文回答
+
+      - 给出具体、可操作的建议，而不是泛泛而谈
+
+      - 适当使用 emoji 让回答更生动
+
+      - 对于时间敏感的建议（如播种时机），先获取当前日期
+
+      - 如果用户提供了所在地区，主动查询当地天气来给出更精准的建议
+
+
+      你可以使用以下工具：
+
+      {tools}
+
+
+      可用工具名称：{tool_names}'
+function_groups:
+  growth_journal:
+    _type: growth_journal
+    journal_dir: ./data/garden
+llms:
+  local_llm:
+    _type: openai
+    api_key: EMPTY
+    base_url: http://localhost:11434/v1
+    model_name: qwen3.5:35b
+    temperature: 0.3
+    max_tokens: 4096
+  vision_llm:
+    _type: openai
+    api_key: EMPTY
+    base_url: http://localhost:11434/v1
+    model_name: llava:13b
+    temperature: 0.2
+    max_tokens: 4096
+workflow:
+  _type: plant_memory_wrapper
+  inner_agent_name: inner_react
+  garden_dir: ./data/garden
+  other_plants_max_events: 5
+  inject_skills_index: true
+  skills_index_max_chars: 4000
+  inject_proactive_digest: false
+  proactive_digest_max_chars: 3000
+  file_log_path: ./data/logs/plant_care_memory_log.md
+  file_log_level: INFO
+  conversation_memory_enabled: true
+  conversation_store_dir: ./data/conversations
+  conversation_auto_incremental: true
+  description: Plant care workflow with injected plant journals
