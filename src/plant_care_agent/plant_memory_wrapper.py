@@ -1,8 +1,9 @@
-"""在调用内层 ReAct Agent 前注入「种植记忆」上下文。
+"""在调用内层 ReAct Agent 前注入「种植记忆」+ 「子 Agent 巡检汇总」上下文。
 
 - 请求头 `X-Focus-Plant`：指定当前关注的植物（与 growth_journal 中的名称一致）。
 - 该植物的**完整** markdown 日志写入 system 消息；其余植物仅保留最近 N 条摘要。
 - 植物日志以 Markdown 文件形式存放于 data/garden/ 目录。
+- 若存在活跃的植物管理项目，会在请求前触发子 Agent 巡检并注入汇总报告。
 """
 
 # 注意：不要启用 `from __future__ import annotations`。
@@ -11,6 +12,7 @@
 # ChatRequestOrMessage 等符号。
 
 import logging
+import re
 from pathlib import Path
 from typing import cast
 
@@ -39,6 +41,9 @@ from plant_care_agent.conversation_store import merge_conversation_transcript
 from plant_care_agent.conversation_store import resolve_incremental
 from plant_care_agent.conversation_store import save_transcript
 from plant_care_agent.conversation_store import transcript_path
+from plant_care_agent.inspector.inspector import PlantInspector
+from plant_care_agent.inspector.project_manager import PlantProjectManager
+from plant_care_agent.inspector.report import aggregate_reports, generate_report
 from plant_care_agent.logging_setup import ensure_root_file_logging
 from plant_care_agent.logging_setup import parse_log_level
 from plant_care_agent.memory.context_builder import build_memory_context
@@ -102,9 +107,46 @@ class PlantMemoryWrapperConfig(FunctionBaseConfig, name="plant_memory_wrapper"):
         default=True,
         description="未带 X-Chat-Incremental 时：若请求仅含 1 条 user 消息，则与磁盘历史拼接（适合只发本轮句子的客户端）。",
     )
+    inject_inspection: bool = Field(
+        default=True,
+        description="是否在请求前触发子 Agent 巡检并注入汇总报告。",
+    )
+    inspection_max_chars: int = Field(
+        default=4000,
+        ge=500,
+        le=20_000,
+        description="巡检汇总注入的最大字符数。",
+    )
+    default_latitude: float = Field(default=31.23, description="默认纬度，用于巡检天气查询。")
+    default_longitude: float = Field(default=121.47, description="默认经度。")
     description: str = Field(
         default="注入种植记忆后调用内层对话 Agent。",
     )
+
+
+_PLANTING_RE = re.compile(
+    r"(?:种了|种植了|播种了|新种了|刚种了|今天种)\s*(?:一[棵株颗盆])?(.+?)(?:[，。,\.!！?？\s]|$)"
+)
+_INSPECT_KEYWORDS = {"巡检", "检查一下", "怎么样了", "状态如何", "查看状态", "检查", "巡查"}
+
+
+def _detect_user_intent(user_text: str) -> str:
+    """返回 'plant' / 'inspect' / 'other'。"""
+    if _PLANTING_RE.search(user_text):
+        return "plant"
+    for kw in _INSPECT_KEYWORDS:
+        if kw in user_text:
+            return "inspect"
+    return "other"
+
+
+def _extract_last_user_text(msgs: list) -> str:
+    for m in reversed(msgs):
+        content = getattr(m, "content", None) or ""
+        role = getattr(m, "role", None)
+        if role and "user" in str(role).lower() and content.strip():
+            return str(content).strip()
+    return ""
 
 
 @register_function(config_type=PlantMemoryWrapperConfig, framework_wrappers=[LLMFrameworkEnum.LANGCHAIN])
@@ -113,6 +155,8 @@ async def plant_memory_wrapper_fn(config: PlantMemoryWrapperConfig, builder: Bui
     garden_dir = Path(config.garden_dir)
     log_path_str = (config.file_log_path or "").strip()
     log_file_path = Path(log_path_str) if log_path_str else None
+    proj_mgr = PlantProjectManager(garden_dir)
+    plant_inspector = PlantInspector(garden_dir, config.default_latitude, config.default_longitude)
 
     async def _response_fn(
         chat_request_or_message: ChatRequestOrMessage,
@@ -180,6 +224,41 @@ async def plant_memory_wrapper_fn(config: PlantMemoryWrapperConfig, builder: Bui
         )
         msgs.insert(0, memory_msg)
         insert_at = 1
+
+        if config.inject_inspection:
+            user_text = _extract_last_user_text(msgs)
+            intent = _detect_user_intent(user_text)
+            force_inspect = intent in ("plant", "inspect")
+
+            proj_mgr.reload()
+            if force_inspect:
+                to_inspect = proj_mgr.list_projects(active_only=True)
+            else:
+                to_inspect = proj_mgr.projects_needing_inspection()
+
+            if to_inspect:
+                try:
+                    wx_data = await plant_inspector._fetch_weather()
+                    results = []
+                    for proj in to_inspect:
+                        result = await plant_inspector.inspect(proj, weather_data=wx_data)
+                        proj_mgr.mark_inspected(proj.name)
+                        generate_report(result, garden_dir)
+                        results.append(result)
+                    inspection_text = aggregate_reports(results)
+                    cap = int(config.inspection_max_chars)
+                    if len(inspection_text) > cap:
+                        inspection_text = inspection_text[:cap - 20] + "\n…(截断)"
+                    if inspection_text.strip():
+                        inspection_msg = Message(
+                            role=UserMessageContentRoleType.SYSTEM,
+                            content=inspection_text,
+                        )
+                        msgs.insert(insert_at, inspection_msg)
+                        insert_at += 1
+                except Exception as exc:
+                    logger.warning("Sub-agent inspection failed: %s", exc)
+
         if config.inject_proactive_digest:
             digest_path = garden_dir / "PROACTIVE_DIGEST.md"
             if digest_path.is_file():

@@ -16,6 +16,7 @@ import plant_care_agent.tools.care_scheduler  # noqa: F401
 import plant_care_agent.tools.growth_journal  # noqa: F401
 import plant_care_agent.tools.plant_chart  # noqa: F401
 import plant_care_agent.tools.growth_slides  # noqa: F401
+import plant_care_agent.tools.plant_project  # noqa: F401
 
 # --- 农业模式专属工具 ---
 import plant_care_agent.tools.sensor_monitor  # noqa: F401
