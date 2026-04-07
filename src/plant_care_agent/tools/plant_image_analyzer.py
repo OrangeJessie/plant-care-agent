@@ -44,20 +44,24 @@ async def plant_image_analyzer_function(config: PlantImageAnalyzerConfig, builde
 
     async def _analyze_image(image_path: str) -> str:
         """Analyze a plant photo to diagnose health issues, pests, diseases, and provide care recommendations.
-        Input is the file path to a plant image (jpg, png, webp)."""
-        path = Path(image_path.strip())
-        if not path.exists():
-            return f"图片文件不存在: {image_path}。请提供正确的图片路径。"
+        Input is either a local file path (jpg, png, webp) or a base64 data URL (data:image/...;base64,...)."""
+        if image_path.startswith("data:image/"):
+            data_url = image_path
+            file_name = "uploaded_image"
+        else:
+            path = Path(image_path.strip())
+            if not path.exists():
+                return f"图片文件不存在: {image_path}。请提供正确的图片路径。"
 
-        suffix = path.suffix.lower()
-        if suffix not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
-            return f"不支持的图片格式: {suffix}。请使用 JPG、PNG 或 WebP 格式。"
+            suffix = path.suffix.lower()
+            if suffix not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+                return f"不支持的图片格式: {suffix}。请使用 JPG、PNG 或 WebP 格式。"
 
-        image_data = path.read_bytes()
-        b64 = base64.b64encode(image_data).decode("utf-8")
-
-        mime_type = mimetypes.guess_type(str(path))[0] or "image/jpeg"
-        data_url = f"data:{mime_type};base64,{b64}"
+            image_data = path.read_bytes()
+            b64 = base64.b64encode(image_data).decode("utf-8")
+            mime_type = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+            data_url = f"data:{mime_type};base64,{b64}"
+            file_name = path.name
 
         message = HumanMessage(
             content=[
@@ -69,7 +73,7 @@ async def plant_image_analyzer_function(config: PlantImageAnalyzerConfig, builde
         try:
             response = await vision_llm.ainvoke([message])
             result_text = response.content if hasattr(response, "content") else str(response)
-            return f"🔍 植物图像诊断报告\n图片: {path.name}\n\n{result_text}"
+            return f"🔍 植物图像诊断报告\n图片: {file_name}\n\n{result_text}"
         except Exception as e:
             logger.error("Image analysis failed: %s", e)
             return (
@@ -82,6 +86,6 @@ async def plant_image_analyzer_function(config: PlantImageAnalyzerConfig, builde
         _analyze_image,
         description=(
             "分析植物照片，诊断健康状况，识别病虫害、营养问题和环境问题，"
-            "并给出处理建议。输入图片文件路径。"
+            "并给出处理建议。输入本地图片路径或 base64 data URL（data:image/...;base64,...）。"
         ),
     )
