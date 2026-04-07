@@ -205,13 +205,16 @@ def _start_nat_server(mode: str, console: Console) -> None:
         config_file = generated_dir / "config.yml"
 
     nat_port = os.environ.get("NAT_PORT", "8000")
+    log_file = project_root / "data" / "logs" / "nat_server.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
 
     console.print(f"[dim]==> 后台启动 NAT 服务 (port={nat_port}) ...[/dim]")
+    _nat_log_fh = open(log_file, "a", encoding="utf-8")
     _nat_proc = subprocess.Popen(
         ["nat", "serve", "--config_file", str(config_file)],
         cwd=str(project_root),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=_nat_log_fh,
+        stderr=_nat_log_fh,
     )
 
     def _cleanup_nat():
@@ -221,6 +224,7 @@ def _start_nat_server(mode: str, console: Console) -> None:
                 _nat_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 _nat_proc.kill()
+        _nat_log_fh.close()
 
     atexit.register(_cleanup_nat)
     signal.signal(signal.SIGTERM, lambda *_: (_cleanup_nat(), sys.exit(0)))

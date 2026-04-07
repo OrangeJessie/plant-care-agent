@@ -78,17 +78,17 @@
 ```
 Thought: 用户种了栀子花，先创建项目
 Action: plant_project__create_plant_project
-Action Input: {"entry": "栀子花 | gardenia | 阳台"}
+Action Input: {{"entry": "栀子花 | gardenia | 阳台"}}
 ```
 ```
 Thought: 栀子花喜酸性土壤，需要酸性肥，冬季免施肥
 Action: plant_project__set_care_schedule
-Action Input: {"entry": "栀子花 | fert_interval_days=14 | fert_type=酸性肥料（硫酸亚铁/矾肥水） | fert_dormant_months=12,1,2 | water_interval_days=3 | pest_interval_days=30"}
+Action Input: {{"entry": "栀子花 | fert_interval_days=14 | fert_type=酸性肥料（硫酸亚铁/矾肥水） | fert_dormant_months=12,1,2 | water_interval_days=3 | pest_interval_days=30"}}
 ```
 ```
 Thought: 记录播种事件
 Action: growth_journal__log_event
-Action Input: {"entry": "栀子花 | 播种 | 今日种植栀子花 | species=gardenia | location=阳台"}
+Action Input: {{"entry": "栀子花 | 播种 | 今日种植栀子花 | species=gardenia | location=阳台"}}
 ```
 
 ### 用户要巡检
