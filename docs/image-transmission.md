@@ -163,6 +163,9 @@ export NAT_IMAGE_MODE=multipart   # path | base64 | multipart | url
 # 压缩参数（base64 / multipart 模式生效）
 export NAT_IMAGE_MAXPX=1024       # 长边最大像素，默认 1024
 export NAT_IMAGE_QUALITY=75       # JPEG 质量 1-95，默认 75
+
+# 图片分析超时（视觉模型推理较慢，独立于普通对话超时）
+export NAT_IMAGE_TIMEOUT=1800     # 默认 1800s（30 分钟）；普通对话用 NAT_CHAT_TIMEOUT=600
 ```
 
 设置后直接使用，无需 `--mode`：
@@ -238,6 +241,7 @@ multipart 模式: rose.jpg → http://localhost:8000/static/plant_images/
 
 | 现象 | 原因 | 解决方案 |
 |---|---|---|
+| 客户端 `TimeoutError: timed out`，服务端正常完成 | 视觉模型推理时间超过客户端 socket 超时（默认 600s） | `export NAT_IMAGE_TIMEOUT=1800`（客户端已对多模态请求自动使用此值） |
 | `上传失败: HTTP 404` | NAT 未启用 object_store | 确认 `config.yml` 已添加 `general.front_end.object_store` |
 | `上传失败: HTTP 422` | multipart 字段名错误 | 代码已正确使用 `name="file"`，检查 NAT 版本 |
 | 上传成功，工具报"图片文件不存在" | `plant_image_analyzer` 旧版不支持 HTTP URL | 确认已更新工具代码（现支持 `http://`、`https://`、本地路径、base64） |

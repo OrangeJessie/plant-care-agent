@@ -27,6 +27,7 @@
                        url       : 直接传 http/https 链接，不上传文件
   NAT_IMAGE_MAXPX    压缩后长边最大像素，默认 1024
   NAT_IMAGE_QUALITY  JPEG 压缩质量 1-95，默认 75
+  NAT_IMAGE_TIMEOUT  图片分析请求超时秒数，默认 1800（视觉模型推理较慢，独立于 NAT_CHAT_TIMEOUT）
 """
 
 from __future__ import annotations
@@ -245,6 +246,9 @@ def main() -> None:
     session_id = os.environ.get("NAT_SESSION_ID", "").strip()
     focus_plant = os.environ.get("NAT_FOCUS_PLANT", "").strip()
     timeout = float(os.environ.get("NAT_CHAT_TIMEOUT", "600"))
+    # 图片分析（视觉模型推理）往往比普通对话慢很多，单独设置更长的超时
+    # 可通过环境变量覆盖：export NAT_IMAGE_TIMEOUT=1800
+    image_timeout = float(os.environ.get("NAT_IMAGE_TIMEOUT", "1800"))
     conversation_reset_next = False
 
     console = Console(highlight=False)
@@ -282,9 +286,13 @@ def main() -> None:
         console.print(f"[dim]当前关注植物（完整记忆）:[/dim] [cyan]{focus_plant}[/cyan]\n")
 
     def do_send(user_text: str, spinner: str = "思考中…", *, user_content=None) -> None:
-        """发送消息。user_content 非 None 时作为多模态 content 列表（base64/multipart/url 模式）。"""
+        """发送消息。user_content 非 None 时作为多模态 content 列表（base64/multipart/url 模式）。
+        多模态请求自动使用 image_timeout（默认 1800s），避免视觉模型推理时间过长导致客户端超时。
+        """
         nonlocal conversation_reset_next
         content = user_content if user_content is not None else user_text
+        # 多模态请求（图片分析）用更长超时；普通文字用标准超时
+        req_timeout = image_timeout if user_content is not None else timeout
         messages.append({"role": "user", "content": content})
         with console.status(f"[bold cyan]{spinner}[/bold cyan]", spinner="dots"):
             try:
@@ -293,7 +301,7 @@ def main() -> None:
                     messages,
                     user_id,
                     focus_plant,
-                    timeout,
+                    req_timeout,
                     session_id=session_id,
                     conversation_reset=conversation_reset_next,
                 )
