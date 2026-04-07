@@ -136,7 +136,7 @@ llms:
     _type: openai
     api_key: EMPTY
     base_url: http://localhost:11434/v1
-    model_name: llava:13b
+    model_name: qwen3.5:35b
     temperature: 0.2
     max_tokens: 4096
 workflow:
