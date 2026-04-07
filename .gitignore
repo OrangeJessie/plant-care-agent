@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+.venv/
+.env
+*.log
+data/logs/
+# 植物日志（markdown）由运行时生成，仅保留索引供参考
+data/garden/*.md
+!data/garden/GARDEN.md
+# 主动巡检：含 ntfy topic / webhook 等，勿提交
+data/garden/proactive_monitor.yaml
+data/garden/proactive_last_snapshot.json
+data/conversations/
+# 生成的图表和幻灯片
+data/charts/
+data/slides/
+.DS_Store

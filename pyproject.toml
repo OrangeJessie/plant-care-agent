@@ -1,0 +1,35 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools>=64"]
+
+[tool.setuptools.packages]
+find = {where = ["src"]}
+
+[tool.setuptools.package-data]
+"plant_care_agent.data" = ["*.json"]
+"plant_care_agent.configs" = ["*.yml"]
+"plant_care_agent.prompts" = ["*.md"]
+"plant_care_agent.skills" = ["bundled/**/*.md"]
+
+[project]
+name = "plant-care-agent"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+description = "Plant Care Agent - 基于 NeMo Agent Toolkit 的植物种植全流程 AI 助手"
+dependencies = [
+    "nvidia-nat[langchain]",
+    "aiohttp>=3.9",
+    "duckduckgo-search>=7.0",
+    "matplotlib>=3.8",
+    "python-pptx>=1.0",
+    "pyyaml>=6.0",
+]
+
+[project.entry-points.'nat.components']
+plant_care_agent = "plant_care_agent.register"
+
+[project.optional-dependencies]
+tui = [
+    "rich>=13.0",
+    "prompt-toolkit>=3.0.0",
+]
