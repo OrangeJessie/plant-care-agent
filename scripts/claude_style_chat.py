@@ -127,9 +127,17 @@ def _tool_label(action_name: str) -> str:
     return f"🔧  调用 {action_name}"
 
 
-def _build_headers(
-    user_id: str, session_id: str, focus_plant: str, conversation_reset: bool,
-) -> dict[str, str]:
+def _post_chat(
+    url: str,
+    messages: list[dict],
+    user_id: str,
+    focus_plant: str,
+    timeout: float,
+    *,
+    session_id: str = "",
+    conversation_reset: bool = False,
+) -> tuple[int, str]:
+    body = json.dumps({"messages": messages, "stream": False}, ensure_ascii=False).encode("utf-8")
     hdrs: dict[str, str] = {
         "Content-Type": "application/json",
         "Accept": "application/json",
@@ -142,60 +150,9 @@ def _build_headers(
         hdrs["X-Focus-Plant"] = focus_plant
     if conversation_reset:
         hdrs["X-Conversation-Reset"] = "1"
-    return hdrs
-
-
-def _post_chat(
-    url: str,
-    messages: list[dict],
-    user_id: str,
-    focus_plant: str,
-    timeout: float,
-    *,
-    session_id: str = "",
-    conversation_reset: bool = False,
-) -> tuple[int, str]:
-    body = json.dumps({"messages": messages, "stream": False}, ensure_ascii=False).encode("utf-8")
-    hdrs = _build_headers(user_id, session_id, focus_plant, conversation_reset)
     req = urllib.request.Request(url, data=body, method="POST", headers=hdrs)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.status, resp.read().decode("utf-8", errors="replace")
-
-
-def _post_chat_stream(
-    url: str,
-    messages: list[dict],
-    user_id: str,
-    focus_plant: str,
-    timeout: float,
-    *,
-    session_id: str = "",
-    conversation_reset: bool = False,
-):
-    """SSE 流式请求，yield 每个 delta content 片段。"""
-    body = json.dumps({"messages": messages, "stream": True}, ensure_ascii=False).encode("utf-8")
-    hdrs = _build_headers(user_id, session_id, focus_plant, conversation_reset)
-    hdrs["Accept"] = "text/event-stream"
-    req = urllib.request.Request(url, data=body, method="POST", headers=hdrs)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        for raw_line in resp:
-            line = raw_line.decode("utf-8", errors="replace").strip()
-            if not line or not line.startswith("data:"):
-                continue
-            payload = line[5:].strip()
-            if payload == "[DONE]":
-                break
-            try:
-                chunk = json.loads(payload)
-            except json.JSONDecodeError:
-                continue
-            choices = chunk.get("choices") or []
-            if not choices:
-                continue
-            delta = choices[0].get("delta") or {}
-            content = delta.get("content", "")
-            if content:
-                yield content
 
 
 def _extract_assistant_text(data: dict) -> str:
@@ -397,98 +354,16 @@ def main() -> None:
         console.print("[dim]提示：请确保 NAT 服务使用 config_farm.yml 启动[/dim]\n")
 
     import re as _re
+    _ACTION_RE = _re.compile(r"^Action:\s*(.+)", _re.MULTILINE)
 
-    _ACTION_RE = _re.compile(r"Action:\s*(.+)")
-    _FINAL_ANSWER_RE = _re.compile(r"Final Answer:\s*")
-
-    def _stream_with_status(user_text: str, spinner_label: str = "思考中…") -> None:
-        """流式请求，实时显示工具调用状态。"""
+    def do_send(user_text: str, spinner: str = "思考中…") -> None:
         nonlocal conversation_reset_next
         messages.append({"role": "user", "content": user_text})
 
-        full_text = ""
-        step_count = 0
-        status_lines: list[str] = []
-
-        console.print(f"  [dim]⏳ {spinner_label}[/dim]", end="")
-
-        try:
-            stream = _post_chat_stream(
-                url,
-                messages,
-                user_id,
-                focus_plant,
-                timeout,
-                session_id=session_id,
-                conversation_reset=conversation_reset_next,
-            )
-            for chunk in stream:
-                full_text += chunk
-                m = _ACTION_RE.search(chunk)
-                if not m:
-                    for line in chunk.split("\n"):
-                        m2 = _ACTION_RE.search(line)
-                        if m2:
-                            m = m2
-                            break
-                if m:
-                    action_name = m.group(1).strip()
-                    step_count += 1
-                    label = _tool_label(action_name)
-                    status_line = f"  [dim]  ├─ 步骤 {step_count}: {label}[/dim]"
-                    status_lines.append(status_line)
-                    console.print(f"\r{status_line}")
-        except urllib.error.HTTPError as e:
-            console.print()
-            err = e.read().decode("utf-8", errors="replace")
-            console.print(Panel(f"[red]HTTP {e.code}[/red]\n{err}", title="错误", border_style="red"))
-            messages.pop()
-            return
-        except urllib.error.URLError as e:
-            console.print()
-            console.print(Panel(f"[red]连接失败[/red]\n{e.reason}", title="错误", border_style="red"))
-            messages.pop()
-            return
-        except Exception as e:
-            console.print()
-            console.print(Panel(f"[red]{type(e).__name__}[/red]\n{e}", title="错误", border_style="red"))
-            messages.pop()
-            return
-
-        if step_count > 0:
-            console.print(f"  [dim]  └─ ✅ 完成（共 {step_count} 步）[/dim]")
-        else:
-            console.print()
-
-        m_final = _FINAL_ANSWER_RE.search(full_text)
-        if m_final:
-            reply = full_text[m_final.end():].strip()
-        else:
-            reply = full_text.strip()
-
-        if not reply:
-            console.print(Panel("[yellow]未获取到回答内容[/yellow]", border_style="yellow"))
-            messages.pop()
-            return
-
-        messages.append({"role": "assistant", "content": reply})
-        conversation_reset_next = False
-        console.print(Rule(style="dim"))
-        console.print(Panel(Markdown(reply), title="[bold green]助手[/bold green]", border_style="green"))
-        console.print()
-
-    def _send_no_stream(user_text: str, spinner: str = "思考中…") -> None:
-        """非流式回退（streaming 失败时用）。"""
-        nonlocal conversation_reset_next
-        messages.append({"role": "user", "content": user_text})
         with console.status(f"[bold cyan]{spinner}[/bold cyan]", spinner="dots"):
             try:
-                status, raw = _post_chat(
-                    url,
-                    messages,
-                    user_id,
-                    focus_plant,
-                    timeout,
+                http_status, raw = _post_chat(
+                    url, messages, user_id, focus_plant, timeout,
                     session_id=session_id,
                     conversation_reset=conversation_reset_next,
                 )
@@ -501,7 +376,8 @@ def main() -> None:
                 console.print(Panel(f"[red]连接失败[/red]\n{e.reason}", title="错误", border_style="red"))
                 messages.pop()
                 return
-        if status != 200 or not raw.strip():
+
+        if http_status != 200 or not raw.strip():
             console.print(Panel(f"[red]异常响应[/red]\n{raw[:1500]}", title="错误", border_style="red"))
             messages.pop()
             return
@@ -515,19 +391,22 @@ def main() -> None:
             console.print(Panel(str(data["error"]), title="API 错误", border_style="red"))
             messages.pop()
             return
+
         reply = _extract_assistant_text(data)
+
+        actions = _ACTION_RE.findall(reply)
+        if actions:
+            console.print()
+            for i, action_name in enumerate(actions, 1):
+                label = _tool_label(action_name.strip())
+                console.print(f"  [dim]  ├─ 步骤 {i}: {label}[/dim]")
+            console.print(f"  [dim]  └─ ✅ 完成（共 {len(actions)} 步）[/dim]")
+
         messages.append({"role": "assistant", "content": reply})
         conversation_reset_next = False
         console.print(Rule(style="dim"))
         console.print(Panel(Markdown(reply), title="[bold green]助手[/bold green]", border_style="green"))
         console.print()
-
-    def do_send(user_text: str, spinner: str = "思考中…") -> None:
-        """发送消息，优先使用 streaming 模式显示工具调用状态。"""
-        try:
-            _stream_with_status(user_text, spinner)
-        except Exception:
-            _send_no_stream(user_text, spinner)
 
     while True:
         try:
