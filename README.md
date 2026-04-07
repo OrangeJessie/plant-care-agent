@@ -140,3 +140,7 @@ src/plant_care_agent/
 ## License
 
 Apache-2.0
+
+## 文档
+
+- [图片传输模式说明](docs/image-transmission.md) — `/image` 命令四种模式（path / base64 / multipart / url）的使用与测试

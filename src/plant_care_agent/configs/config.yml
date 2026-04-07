@@ -10,6 +10,7 @@ functions:
   plant_image_analyzer:
     _type: plant_image_analyzer
     vision_llm_name: vision_llm
+    internal_base_url: "http://localhost:9000"  # 工具内部下载图片时使用，避免 hairpin NAT 问题
   current_datetime:
     _type: current_datetime
   web_search:
@@ -167,3 +168,23 @@ workflow:
   conversation_store_dir: ./data/conversations
   conversation_auto_incremental: true
   description: Plant care workflow with injected plant journals
+
+# ── 静态文件存储（支持 multipart 图片上传）─────────────────────────────────
+# 启用后 NAT 自动注册以下路由：
+#   PUT    /static/{path}  上传文件（upsert，不冲突）
+#   GET    /static/{path}  下载/访问文件
+#   POST   /static/{path}  上传（key 已存在返回 409）
+#   DELETE /static/{path}  删除文件
+#
+# 切换持久化存储只需改 object_stores.plant_image_store._type：
+#   _type: s3      需安装 nvidia_nat_s3，配置 endpoint_url / access_key / secret_key / bucket_name
+#   _type: redis   需安装 nvidia_nat_redis，配置 host / port / db / bucket_name
+# ─────────────────────────────────────────────────────────────────────────────
+general:
+  front_end:
+    _type: fastapi
+    object_store: plant_image_store  # 引用下方 object_stores 中的名字
+
+object_stores:
+  plant_image_store:
+    _type: in_memory  # 内存存储，无需额外依赖；重启后图片清空
