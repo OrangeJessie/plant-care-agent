@@ -6,17 +6,13 @@
   --mode farm      大规模农业管理模式
   不指定时弹出交互选择菜单。
 
-依赖（单独装）:
-  pip install rich "prompt-toolkit>=3.0"
-
-先启动对应模式的 NAT 服务:
-  nat serve --config_file src/plant_care_agent/configs/config.yml       # 个人模式
-  nat serve --config_file src/plant_care_agent/configs/config_farm.yml  # 农业模式
+可自动启动 NAT 服务（选择模式后后台拉起），也可连接已运行的服务。
 
 运行:
-  python scripts/claude_style_chat.py                    # 交互选择模式
+  python scripts/claude_style_chat.py                    # 交互选择模式，自动启动服务
   python scripts/claude_style_chat.py --mode personal    # 个人模式
   python scripts/claude_style_chat.py --mode farm        # 农业模式
+  python scripts/claude_style_chat.py --no-server        # 不自动启动服务（连接已运行的服务）
 
 环境变量:
   NAT_CHAT_URL     默认 http://localhost:8000/v1/chat/completions
@@ -29,10 +25,14 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import shlex
+import signal
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -176,6 +176,80 @@ def _parse_mode_arg() -> str | None:
     return None
 
 
+def _has_flag(name: str) -> bool:
+    return name in sys.argv[1:]
+
+
+_nat_proc: subprocess.Popen | None = None
+
+
+def _start_nat_server(mode: str, console: Console) -> None:
+    """后台启动 NAT 服务并等待就绪。"""
+    global _nat_proc
+
+    project_root = _ROOT
+    generated_dir = project_root / "src" / "plant_care_agent" / "configs" / ".generated"
+
+    # 先组装配置
+    console.print("[dim]==> 组装配置 ...[/dim]")
+    subprocess.run(
+        [sys.executable, str(project_root / "scripts" / "assemble_config.py"), "--all"],
+        cwd=str(project_root),
+        check=True,
+        capture_output=True,
+    )
+
+    if mode == "farm":
+        config_file = generated_dir / "config_farm.yml"
+    else:
+        config_file = generated_dir / "config.yml"
+
+    nat_port = os.environ.get("NAT_PORT", "8000")
+
+    console.print(f"[dim]==> 后台启动 NAT 服务 (port={nat_port}) ...[/dim]")
+    _nat_proc = subprocess.Popen(
+        ["nat", "serve", "--config_file", str(config_file)],
+        cwd=str(project_root),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    def _cleanup_nat():
+        if _nat_proc and _nat_proc.poll() is None:
+            _nat_proc.terminate()
+            try:
+                _nat_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _nat_proc.kill()
+
+    atexit.register(_cleanup_nat)
+    signal.signal(signal.SIGTERM, lambda *_: (_cleanup_nat(), sys.exit(0)))
+
+    # 等待服务就绪
+    base_url = f"http://localhost:{nat_port}"
+    max_wait = 30
+    with console.status("[bold cyan]等待服务就绪 ...[/bold cyan]", spinner="dots"):
+        for i in range(max_wait):
+            if _nat_proc.poll() is not None:
+                console.print("[red]错误: NAT 服务启动失败[/red]")
+                sys.exit(1)
+            try:
+                urllib.request.urlopen(f"{base_url}/v1/models", timeout=2)
+                break
+            except Exception:
+                pass
+            try:
+                urllib.request.urlopen(f"{base_url}/health", timeout=2)
+                break
+            except Exception:
+                pass
+            time.sleep(1)
+        else:
+            console.print("[yellow]警告: 等待超时，仍尝试连接 ...[/yellow]")
+
+    console.print("[dim]==> 服务已就绪[/dim]\n")
+
+
 def main() -> None:
     console = Console(highlight=False)
 
@@ -184,6 +258,10 @@ def main() -> None:
         mode = mode_arg
     else:
         mode = _select_mode(console)
+
+    # 自动启动 NAT 服务（除非 --no-server）
+    if not _has_flag("--no-server"):
+        _start_nat_server(mode, console)
 
     url = os.environ.get("NAT_CHAT_URL", "http://localhost:8000/v1/chat/completions")
     user_id = os.environ.get("NAT_USER_ID", "")
