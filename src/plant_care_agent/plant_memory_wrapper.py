@@ -161,11 +161,11 @@ _INSPECT_KEYWORDS = {"巡检", "检查一下", "怎么样了", "状态如何", "
 _bg_tasks: dict[str, asyncio.Task] = {}  # keyed by garden_dir to avoid multi-instance conflicts
 
 
-def _seconds_until_hour(target_hour: int) -> float:
-    """计算从现在到下一个 target_hour 整点还需等待的秒数。"""
+def _seconds_until_time(target_hour: int, target_minute: int = 0) -> float:
+    """计算从现在到下一个 target_hour:target_minute 还需等待的秒数。"""
     from datetime import timedelta
     now = datetime.now()
-    target = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+    target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
     if now >= target:
         target += timedelta(days=1)
     return (target - now).total_seconds()
@@ -187,14 +187,18 @@ async def _daily_digest_loop(
 ) -> None:
     """每日定时全量巡检 + 推送汇总（无论好坏都推）。"""
     from plant_care_agent.proactive.monitor_yaml import ensure_template
+    from plant_care_agent.proactive.monitor_yaml import load_monitor_config
     from plant_care_agent.proactive.push import push_digest
 
     ensure_template(garden_dir)
     logger.info("每日巡检循环已启动 (每天 %02d:00 推送, garden=%s)", digest_hour, garden_dir)
 
     while True:
-        wait = _seconds_until_hour(digest_hour)
-        logger.debug("每日巡检: 距下次推送 %.0f 秒", wait)
+        cfg = load_monitor_config(garden_dir)
+        cur_hour = cfg.get("digest_hour", digest_hour)
+        cur_minute = cfg.get("digest_minute", 0)
+        wait = _seconds_until_time(cur_hour, cur_minute)
+        logger.debug("每日巡检: 目标 %02d:%02d, 距下次推送 %.0f 秒", cur_hour, cur_minute, wait)
         await asyncio.sleep(wait)
 
         try:

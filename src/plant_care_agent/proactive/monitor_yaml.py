@@ -14,6 +14,8 @@ DEFAULT_MONITOR: dict[str, Any] = {
     "latitude": None,
     "longitude": None,
     "plant_ids": [],
+    "digest_hour": 8,
+    "digest_minute": 0,
     "cron_hint": "0 8,20 * * *",
     "push": {
         "mode": "none",

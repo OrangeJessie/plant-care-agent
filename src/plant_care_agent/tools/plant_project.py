@@ -250,9 +250,140 @@ async def plant_project_function(config: PlantProjectConfig, _builder: Builder):
         _remove_plant_project,
         description="停止植物管理项目的子 Agent 监控。输入植物名称。",
     )
+    async def _configure_auto_inspection(entry: str) -> str:
+        """Configure the daily automatic inspection schedule and push notifications.
+        This sets WHEN the system runs auto-inspection and HOW it notifies the user.
+
+        Input format: 'time=HH:MM | push=ntfy | topic=TOPIC_NAME'
+        All fields are optional. Shorthand: just 'HH:MM' sets the time only.
+
+        Examples:
+          '21:17' — set daily inspection at 21:17
+          '9:00' — set daily inspection at 9:00
+          'time=20:00 | push=ntfy | topic=my-garden' — set time + ntfy push
+          'time=8:00 | push=webhook | url=https://example.com/hook' — set time + webhook
+          'off' — disable auto inspection push
+          'status' — show current configuration
+        """
+        from pathlib import Path as _Path
+        from plant_care_agent.proactive.monitor_yaml import (
+            load_monitor_config,
+            save_monitor_config,
+            ensure_template,
+            monitor_config_path,
+        )
+
+        garden = _Path(config.garden_dir)
+        entry = entry.strip()
+
+        if entry.lower() == "status":
+            cfg = load_monitor_config(garden)
+            push = cfg.get("push") or {}
+            h = cfg.get("digest_hour", 8)
+            m = cfg.get("digest_minute", 0)
+            mode = (push.get("mode") or "none").lower()
+            lines = [
+                "📋 自动巡检配置",
+                f"  定时巡检: 每天 {h:02d}:{m:02d}",
+                f"  推送方式: {mode}",
+            ]
+            if mode == "ntfy":
+                topic = (push.get("ntfy") or {}).get("topic", "")
+                lines.append(f"  ntfy topic: {topic}")
+            elif mode == "webhook":
+                url = (push.get("webhook") or {}).get("url", "")
+                lines.append(f"  webhook url: {url}")
+            lines.append(f"  配置文件: {monitor_config_path(garden)}")
+            return "\n".join(lines)
+
+        if entry.lower() == "off":
+            cfg = load_monitor_config(garden)
+            cfg.setdefault("push", {})["mode"] = "none"
+            save_monitor_config(garden, cfg)
+            return "✅ 已关闭自动巡检推送。巡检仍在后台运行，但不再主动通知。"
+
+        ensure_template(garden)
+        cfg = load_monitor_config(garden)
+
+        parts = [p.strip() for p in entry.split("|")]
+        time_str = ""
+        push_mode = ""
+        ntfy_topic = ""
+        webhook_url = ""
+
+        for part in parts:
+            if "=" in part:
+                key, val = part.split("=", 1)
+                key = key.strip().lower()
+                val = val.strip()
+                if key == "time":
+                    time_str = val
+                elif key == "push":
+                    push_mode = val.lower()
+                elif key == "topic":
+                    ntfy_topic = val
+                elif key == "url":
+                    webhook_url = val
+            elif ":" in part and part.replace(":", "").replace(" ", "").isdigit():
+                time_str = part
+
+        result_lines = []
+
+        if time_str:
+            try:
+                h_s, m_s = time_str.split(":")
+                hour = int(h_s)
+                minute = int(m_s)
+                if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                    return "时间格式错误，请用 HH:MM（如 21:17、9:00）。"
+                cfg["digest_hour"] = hour
+                cfg["digest_minute"] = minute
+                result_lines.append(f"⏰ 每日巡检时间: {hour:02d}:{minute:02d}")
+            except (ValueError, IndexError):
+                return "时间格式错误，请用 HH:MM（如 21:17、9:00）。"
+
+        push_cfg = cfg.setdefault("push", {})
+        if push_mode == "ntfy":
+            push_cfg["mode"] = "ntfy"
+            if ntfy_topic:
+                push_cfg.setdefault("ntfy", {})["topic"] = ntfy_topic
+            topic = (push_cfg.get("ntfy") or {}).get("topic", "")
+            if topic:
+                result_lines.append(f"📱 推送方式: ntfy (topic: {topic})")
+            else:
+                result_lines.append("📱 推送方式: ntfy (⚠️ 请补充 topic)")
+        elif push_mode == "webhook":
+            push_cfg["mode"] = "webhook"
+            if webhook_url:
+                push_cfg.setdefault("webhook", {})["url"] = webhook_url
+            result_lines.append(f"🔗 推送方式: webhook")
+        elif not push_mode and (push_cfg.get("mode") or "none") == "none":
+            push_cfg["mode"] = "ntfy"
+            auto_topic = f"plant-care-{garden.name}"
+            push_cfg.setdefault("ntfy", {}).setdefault("topic", auto_topic)
+            result_lines.append(f"📱 推送方式: ntfy (topic: {auto_topic})")
+            result_lines.append("💡 请在手机上安装 ntfy 应用并订阅此 topic 以接收通知")
+
+        cfg["enabled"] = True
+        save_monitor_config(garden, cfg)
+
+        if not result_lines:
+            return "未检测到有效配置。格式: 'HH:MM' 或 'time=HH:MM | push=ntfy | topic=NAME'"
+
+        return "✅ 自动巡检已配置！\n\n" + "\n".join(result_lines) + "\n\n到时间后系统会自动巡检所有植物并推送结果到您的设备。"
+
     yield FunctionInfo.from_fn(
         _toggle_plant_inspection,
         description="开启或关闭某棵植物的自动巡检。格式: '植物名 | on/off'。",
+    )
+    yield FunctionInfo.from_fn(
+        _configure_auto_inspection,
+        description=(
+            "配置每日自动巡检的时间和推送通知方式。"
+            "支持设置巡检时间（如 21:17）、推送方式（ntfy/webhook）。"
+            "用 'status' 查看当前配置，'off' 关闭推送。"
+            "格式: 'HH:MM' 或 'time=HH:MM | push=ntfy | topic=NAME'"
+        ),
     )
     yield FunctionInfo.from_fn(
         _set_care_schedule,

@@ -9,6 +9,7 @@
 | `plant_project__inspect_plant` | 手动触发单棵植物自动巡检 |
 | `plant_project__inspect_all` | 触发所有植物自动巡检汇总 |
 | `plant_project__toggle_plant_inspection` | 开启/关闭某棵植物的自动巡检 |
+| `plant_project__configure_auto_inspection` | 配置每日自动巡检时间和推送通知（如"每天21:17巡检并发消息"） |
 | `plant_project__remove_plant_project` | 停止植物项目监控 |
 
 ### 巡检数据查询 (`plant_inspect_tools`)
@@ -40,12 +41,12 @@
 |------|------|
 | `plant_image_analyzer__analyze_image` | 用视觉模型分析植物照片（病虫害诊断） |
 
-### 可视化
+### 可视化（文字版，无需字体/matplotlib）
 | 工具 | 用途 |
 |------|------|
-| `plant_chart__timeline` | 生成植物生长时间线图 |
-| `plant_chart__dashboard` | 生成植物状态仪表盘 |
-| `plant_chart__compare` | 生成多植物对比图 |
+| `plant_chart__timeline` | 生成植物生长时间线（文字版，含日期轴 + 事件标注） |
+| `plant_chart__dashboard` | 生成植物综合看板（活跃度柱状图 + 事件分布 + 养护周期分析） |
+| `plant_chart__compare` | 多植物生长进度对比（活跃度 + 事件类型对比表） |
 | `growth_slides__generate_slides` | 生成单棵植物成长 PPTX 幻灯片 |
 | `growth_slides__generate_garden_slides` | 生成花园整体 PPTX 幻灯片 |
 
@@ -100,14 +101,31 @@ Action Input: {"entry": "栀子花 | 播种 | 今日种植栀子花 | species=ga
 4. 获取病虫害因素 → 评估风险
 5. 综合汇总 → 给出行动建议
 
+### 用户要设置定时巡检/主动提醒
+
+用户说"每天X点巡检"、"定时提醒"、"主动给我发消息"时 → 调用 `configure_auto_inspection`。
+
+示例：
+```
+Thought: 用户想设置每天 21:17 自动巡检并推送通知
+Action: plant_project__configure_auto_inspection
+Action Input: {"entry": "21:17"}
+```
+
+查看当前配置：
+```
+Action: plant_project__configure_auto_inspection
+Action Input: {"entry": "status"}
+```
+
 ### 用户上传照片
 
 按「病虫害排查」Skill 流程：`plant_image_analyzer` → `plant_knowledge` → 诊断分析。
 
 ### 用户看数据
 
-- 想看图表 → `plant_chart`（timeline / dashboard / compare）
-- 想生成 PPT → 先 `plant_chart` 出图，再 `growth_slides`
+- 想看时间线 / 看板 / 对比 → `plant_chart`（timeline / dashboard / compare），直接输出文字版
+- 想生成 PPT → `growth_slides`
 - 查历史记录 → `growth_journal__query_history`
 
 ### 通用知识问题

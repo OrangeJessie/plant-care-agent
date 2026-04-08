@@ -1,7 +1,7 @@
-"""plant_chart — 植物生长数据可视化工具。
+"""plant_chart — 植物生长数据可视化工具（纯文本版）。
 
-读取 data/garden/{植物名}/journal.md 日志，用 matplotlib 生成图表。
-图表输出到对应植物文件夹下，多植物对比图输出到 garden 根目录。
+读取 data/garden/{植物名}/journal.md 日志，生成文字版图表。
+无 matplotlib / 字体依赖，适用于任何服务器环境。
 """
 
 import logging
@@ -17,12 +17,7 @@ from nat.builder.function_info import FunctionInfo
 from nat.cli.register_workflow import register_function
 from nat.data_models.function import FunctionBaseConfig
 
-from plant_care_agent.garden_paths import (
-    chart_path,
-    compare_chart_path,
-    ensure_plant_dir,
-    journal_path,
-)
+from plant_care_agent.garden_paths import journal_path
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +25,22 @@ EVENT_LINE_RE = re.compile(r"^- \*\*\[(.+?)]\*\*\s+(.+?)(?:\s+_(\d{2}:\d{2})_)?$
 DATE_HEADING_RE = re.compile(r"^### (\d{4}-\d{2}-\d{2})", re.MULTILINE)
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
-EVENT_COLORS = {
-    "播种": "#8B4513", "发芽": "#32CD32", "移栽": "#FF8C00",
-    "浇水": "#4169E1", "施肥": "#DAA520", "修剪": "#9370DB",
-    "开花": "#FF69B4", "结果": "#FF4500", "采收": "#228B22",
-    "病害": "#DC143C", "虫害": "#B22222", "观察": "#708090",
-    "其他": "#A9A9A9",
+EVENT_ICONS = {
+    "播种": "🌰", "发芽": "🌱", "移栽": "🔄",
+    "浇水": "💧", "施肥": "🧪", "修剪": "✂️",
+    "开花": "🌸", "结果": "🍅", "采收": "🧺",
+    "病害": "🦠", "虫害": "🐛", "观察": "👁️",
+    "其他": "📝",
 }
+
+BAR_CHARS = "▏▎▍▌▋▊▉█"
+
+
+def _bar(value: int, max_val: int, width: int = 20) -> str:
+    if max_val <= 0:
+        return ""
+    filled = int(value / max_val * width)
+    return "█" * filled + "░" * (width - filled)
 
 
 def _parse_events(body: str) -> list[dict]:
@@ -87,18 +91,9 @@ async def plant_chart_function(config: PlantChartConfig, _builder: Builder):
     garden = Path(config.garden_dir)
 
     async def _timeline(plant_id: str) -> str:
-        """Generate a timeline chart for a plant's growth events.
+        """Generate a text-based timeline for a plant's growth events.
         Input: plant name/ID.
-        Returns: path to the generated PNG image."""
-        try:
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-            import matplotlib.dates as mdates
-            from matplotlib import font_manager
-        except ImportError:
-            return "需要安装 matplotlib: pip install matplotlib"
-
+        Returns: formatted timeline text."""
         pid = plant_id.strip()
         path = journal_path(garden, pid)
         if not path.exists():
@@ -106,61 +101,45 @@ async def plant_chart_function(config: PlantChartConfig, _builder: Builder):
 
         fm, _, events = _load_plant(path)
         if not events:
-            return f"「{pid}」暂无事件记录，无法生成图表。"
-
-        _setup_chinese_font(plt, font_manager)
-
-        dates = [datetime.strptime(e["date"], "%Y-%m-%d") for e in events]
-        types = [e["type"] for e in events]
-        colors = [EVENT_COLORS.get(t, "#A9A9A9") for t in types]
-
-        fig, ax = plt.subplots(figsize=(14, 6))
-        fig.patch.set_facecolor("#FAFAF5")
-        ax.set_facecolor("#FAFAF5")
-
-        for i, (d, t, c) in enumerate(zip(dates, types, colors)):
-            y_offset = 1 if i % 2 == 0 else -1
-            ax.scatter(d, 0, c=c, s=120, zorder=5, edgecolors="white", linewidth=1.5)
-            ax.annotate(
-                f"{t}\n{events[i]['desc'][:12]}",
-                (d, 0), xytext=(0, 30 * y_offset),
-                textcoords="offset points", ha="center", va="bottom" if y_offset > 0 else "top",
-                fontsize=7, color=c,
-                arrowprops=dict(arrowstyle="-", color=c, lw=0.8),
-            )
-
-        ax.axhline(y=0, color="#CCC", linewidth=2, zorder=1)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-        ax.set_yticks([])
-        ax.spines["left"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        ax.spines["top"].set_visible(False)
+            return f"「{pid}」暂无事件记录，无法生成时间线。"
 
         name = fm.get("name", pid)
         stage = fm.get("stage", "")
-        ax.set_title(f"🌱 {name} 生长时间线  [{stage}]", fontsize=14, pad=20)
+        planted = fm.get("planted", "")
 
-        out = chart_path(garden, pid, "timeline")
-        ensure_plant_dir(garden, pid)
-        fig.tight_layout()
-        fig.savefig(str(out), dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        lines = [f"🌱 {name} 生长时间线  [{stage}]", ""]
 
-        return f"✅ 时间线图已生成: {out}"
+        if planted:
+            try:
+                days_total = (datetime.now().date() - datetime.strptime(planted, "%Y-%m-%d").date()).days
+                lines.append(f"📅 种植于 {planted}（已 {days_total} 天）")
+            except ValueError:
+                pass
+            lines.append("")
+
+        lines.append("─" * 50)
+
+        current_date = ""
+        for e in events:
+            icon = EVENT_ICONS.get(e["type"], "📝")
+            time_str = f" {e['time']}" if e["time"] else ""
+            if e["date"] != current_date:
+                current_date = e["date"]
+                lines.append(f"")
+                lines.append(f"  📆 {current_date}")
+                lines.append(f"  │")
+            lines.append(f"  ├─ {icon} [{e['type']}] {e['desc']}{time_str}")
+
+        lines.append(f"  │")
+        lines.append(f"  └─ 至今共 {len(events)} 条记录")
+        lines.append("─" * 50)
+
+        return "\n".join(lines)
 
     async def _dashboard(plant_id: str) -> str:
-        """Generate a comprehensive dashboard for a plant (timeline + pie + stats).
+        """Generate a text-based dashboard for a plant (activity + distribution + stats).
         Input: plant name/ID.
-        Returns: path to the generated PNG image."""
-        try:
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-            from matplotlib import font_manager
-        except ImportError:
-            return "需要安装 matplotlib: pip install matplotlib"
-
+        Returns: formatted dashboard text."""
         pid = plant_id.strip()
         path = journal_path(garden, pid)
         if not path.exists():
@@ -170,163 +149,183 @@ async def plant_chart_function(config: PlantChartConfig, _builder: Builder):
         if not events:
             return f"「{pid}」暂无事件记录。"
 
-        _setup_chinese_font(plt, font_manager)
-
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6),
-                                 gridspec_kw={"width_ratios": [3, 1.5, 1.5]})
-        fig.patch.set_facecolor("#FAFAF5")
-
         name = fm.get("name", pid)
-        fig.suptitle(f"🌱 {name} 养护看板", fontsize=16, fontweight="bold", y=1.02)
-
-        ax1 = axes[0]
-        ax1.set_facecolor("#FAFAF5")
-        dates_str = sorted(set(e["date"] for e in events))
-        cumulative = list(range(1, len(dates_str) + 1))
-        date_objs = [datetime.strptime(d, "%Y-%m-%d") for d in dates_str]
-
-        events_per_day: dict[str, int] = Counter(e["date"] for e in events)
-        daily_counts = [events_per_day[d] for d in dates_str]
-
-        ax1.bar(date_objs, daily_counts, color="#90EE90", alpha=0.6, label="当日事件数", width=0.8)
-        ax1_twin = ax1.twinx()
-        ax1_twin.plot(date_objs, cumulative, color="#2E8B57", linewidth=2, marker="o", markersize=4, label="累计活跃天数")
-        ax1.set_xlabel("日期")
-        ax1.set_ylabel("当日事件数")
-        ax1_twin.set_ylabel("累计活跃天数")
-        ax1.set_title("事件活跃度", fontsize=12)
-        ax1.tick_params(axis="x", rotation=45)
-
-        ax2 = axes[1]
-        type_counts = Counter(e["type"] for e in events)
-        labels = list(type_counts.keys())
-        sizes = list(type_counts.values())
-        pie_colors = [EVENT_COLORS.get(l, "#A9A9A9") for l in labels]
-        ax2.pie(sizes, labels=labels, colors=pie_colors, autopct="%1.0f%%",
-                startangle=90, textprops={"fontsize": 9})
-        ax2.set_title("事件类型分布", fontsize=12)
-
-        ax3 = axes[2]
-        ax3.axis("off")
         planted = fm.get("planted", "-")
         stage = fm.get("stage", "-")
         species = fm.get("species", "-")
         location = fm.get("location", "-")
-        total = len(events)
+
         try:
             days = (datetime.now().date() - datetime.strptime(planted, "%Y-%m-%d").date()).days
         except (ValueError, TypeError):
             days = "-"
 
-        stats_text = (
-            f"品种: {species}\n"
-            f"位置: {location}\n"
-            f"种植日期: {planted}\n"
-            f"种植天数: {days}\n"
-            f"当前阶段: {stage}\n"
-            f"总事件数: {total}\n"
-            f"活跃天数: {len(dates_str)}\n"
-        )
-        ax3.text(0.1, 0.9, "📊 基本信息", transform=ax3.transAxes,
-                 fontsize=12, fontweight="bold", va="top")
-        ax3.text(0.1, 0.75, stats_text, transform=ax3.transAxes,
-                 fontsize=10, va="top", family="monospace",
-                 linespacing=1.8)
+        dates_str = sorted(set(e["date"] for e in events))
+        events_per_day: dict[str, int] = Counter(e["date"] for e in events)
+        type_counts = Counter(e["type"] for e in events)
 
-        out = chart_path(garden, pid, "dashboard")
-        ensure_plant_dir(garden, pid)
-        fig.tight_layout()
-        fig.savefig(str(out), dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        lines = [
+            f"🌱 {name} 养护看板",
+            "═" * 50,
+            "",
+            "📊 基本信息",
+            "─" * 30,
+            f"  品种: {species}",
+            f"  位置: {location}",
+            f"  种植日期: {planted}",
+            f"  种植天数: {days}",
+            f"  当前阶段: {stage}",
+            f"  总事件数: {len(events)}",
+            f"  活跃天数: {len(dates_str)}",
+            "",
+        ]
 
-        return f"✅ 综合看板已生成: {out}"
+        lines.append("📈 每日活跃度")
+        lines.append("─" * 30)
+        max_daily = max(events_per_day.values()) if events_per_day else 1
+        for d in dates_str[-14:]:
+            cnt = events_per_day[d]
+            bar = _bar(cnt, max_daily, 15)
+            lines.append(f"  {d[5:]}  {bar} {cnt}")
+        if len(dates_str) > 14:
+            lines.append(f"  ...（仅显示最近 14 天，共 {len(dates_str)} 天）")
+        lines.append("")
+
+        lines.append("🥧 事件类型分布")
+        lines.append("─" * 30)
+        total = len(events)
+        max_type_count = max(type_counts.values()) if type_counts else 1
+        for etype, cnt in type_counts.most_common():
+            icon = EVENT_ICONS.get(etype, "📝")
+            pct = cnt / total * 100
+            bar = _bar(cnt, max_type_count, 12)
+            lines.append(f"  {icon} {etype:<4}  {bar} {cnt:>3} ({pct:.0f}%)")
+        lines.append("")
+
+        lines.append("📅 养护周期分析")
+        lines.append("─" * 30)
+        for etype in ["浇水", "施肥", "修剪"]:
+            typed_events = sorted([e for e in events if e["type"] == etype], key=lambda x: x["date"])
+            if len(typed_events) >= 2:
+                dates_obj = [datetime.strptime(e["date"], "%Y-%m-%d") for e in typed_events]
+                intervals = [(dates_obj[i + 1] - dates_obj[i]).days for i in range(len(dates_obj) - 1)]
+                avg = sum(intervals) / len(intervals)
+                icon = EVENT_ICONS.get(etype, "📝")
+                lines.append(f"  {icon} {etype}: 共 {len(typed_events)} 次, 平均间隔 {avg:.1f} 天")
+                lines.append(f"       最近: {typed_events[-1]['date']}")
+            elif len(typed_events) == 1:
+                icon = EVENT_ICONS.get(etype, "📝")
+                lines.append(f"  {icon} {etype}: 仅 1 次 ({typed_events[0]['date']})")
+
+        lines.append("")
+        lines.append("═" * 50)
+
+        return "\n".join(lines)
 
     async def _compare(plant_names: str) -> str:
-        """Compare multiple plants' growth progress in one chart.
+        """Compare multiple plants' growth progress in text format.
         Input: comma-separated plant names (e.g. '我的番茄,阳台薄荷').
-        Returns: path to the generated PNG image."""
-        try:
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-            from matplotlib import font_manager
-        except ImportError:
-            return "需要安装 matplotlib: pip install matplotlib"
-
+        Returns: formatted comparison text."""
         names = [n.strip() for n in plant_names.split(",") if n.strip()]
         if len(names) < 2:
             return "请提供至少两个植物名称，用逗号分隔。"
 
-        _setup_chinese_font(plt, font_manager)
-
-        fig, ax = plt.subplots(figsize=(12, 6))
-        fig.patch.set_facecolor("#FAFAF5")
-        ax.set_facecolor("#FAFAF5")
-
-        palette = ["#2E8B57", "#FF6347", "#4169E1", "#FFD700", "#9370DB", "#FF69B4"]
-        found_any = False
-
-        for i, name in enumerate(names):
-            path = journal_path(garden, name)
+        plant_data: list[tuple[str, dict, list]] = []
+        for n in names:
+            path = journal_path(garden, n)
             if not path.exists():
                 continue
             fm, _, events = _load_plant(path)
-            if not events:
-                continue
-            found_any = True
+            if events:
+                plant_data.append((n, fm, events))
 
-            dates_str = sorted(set(e["date"] for e in events))
-            date_objs = [datetime.strptime(d, "%Y-%m-%d") for d in dates_str]
-            cumulative = list(range(1, len(date_objs) + 1))
-            color = palette[i % len(palette)]
-            label = fm.get("name", name)
-            ax.plot(date_objs, cumulative, color=color, linewidth=2,
-                    marker="o", markersize=5, label=f"{label} ({len(events)}条)")
-
-        if not found_any:
-            plt.close(fig)
+        if not plant_data:
             return "没有找到任何可比较的植物日志。"
 
-        ax.set_xlabel("日期")
-        ax.set_ylabel("累计活跃天数")
-        ax.set_title("🌱 植物生长进度对比", fontsize=14)
-        ax.legend(loc="upper left")
-        ax.tick_params(axis="x", rotation=45)
-        ax.grid(True, alpha=0.3)
+        lines = [
+            "🌱 植物生长进度对比",
+            "═" * 55,
+            "",
+        ]
 
-        out = compare_chart_path(garden)
-        garden.mkdir(parents=True, exist_ok=True)
-        fig.tight_layout()
-        fig.savefig(str(out), dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        header = f"  {'植物':<10} {'事件数':>6} {'活跃天':>6} {'种植天':>6}  {'阶段'}"
+        lines.append(header)
+        lines.append("  " + "─" * 50)
 
-        return f"✅ 多植物对比图已生成: {out}"
+        max_events = max(len(ev) for _, _, ev in plant_data)
+
+        for name, fm, events in plant_data:
+            display_name = fm.get("name", name)
+            active_days = len(set(e["date"] for e in events))
+            planted = fm.get("planted", "")
+            stage = fm.get("stage", "-")
+            try:
+                total_days = (datetime.now().date() - datetime.strptime(planted, "%Y-%m-%d").date()).days
+            except (ValueError, TypeError):
+                total_days = "-"
+            lines.append(f"  {display_name:<10} {len(events):>6} {active_days:>6} {str(total_days):>6}  {stage}")
+
+        lines.append("")
+        lines.append("📈 活跃度对比 (最近 14 天)")
+        lines.append("─" * 55)
+
+        all_dates: set[str] = set()
+        for _, _, events in plant_data:
+            all_dates.update(e["date"] for e in events)
+        recent_dates = sorted(all_dates)[-14:]
+
+        if recent_dates:
+            name_header = "  日期    " + "  ".join(
+                f"{fm.get('name', n)[:4]:>4}" for n, fm, _ in plant_data
+            )
+            lines.append(name_header)
+            lines.append("  " + "─" * (8 + 6 * len(plant_data)))
+
+            for d in recent_dates:
+                row = f"  {d[5:]}"
+                for _, _, events in plant_data:
+                    cnt = sum(1 for e in events if e["date"] == d)
+                    cell = f"{cnt}" if cnt > 0 else "·"
+                    row += f"  {cell:>4}"
+                lines.append(row)
+
+        lines.append("")
+        lines.append("🥧 事件类型对比")
+        lines.append("─" * 55)
+
+        all_types: set[str] = set()
+        for _, _, events in plant_data:
+            all_types.update(e["type"] for e in events)
+
+        type_header = f"  {'类型':<6}" + "  ".join(
+            f"{fm.get('name', n)[:4]:>4}" for n, fm, _ in plant_data
+        )
+        lines.append(type_header)
+        lines.append("  " + "─" * (6 + 6 * len(plant_data)))
+
+        for etype in sorted(all_types):
+            icon = EVENT_ICONS.get(etype, "📝")
+            row = f"  {icon}{etype:<4}"
+            for _, _, events in plant_data:
+                cnt = sum(1 for e in events if e["type"] == etype)
+                cell = str(cnt) if cnt > 0 else "-"
+                row += f"  {cell:>4}"
+            lines.append(row)
+
+        lines.append("")
+        lines.append("═" * 55)
+
+        return "\n".join(lines)
 
     yield FunctionInfo.from_fn(
         _timeline,
-        description="生成植物生长时间线图（每个事件在时间轴上标注）。",
+        description="生成植物生长时间线（每个事件在时间轴上标注）。",
     )
     yield FunctionInfo.from_fn(
         _dashboard,
-        description="生成植物综合看板（活跃度柱状图 + 事件分布饼图 + 基本信息统计）。",
+        description="生成植物综合看板（活跃度 + 事件分布 + 养护周期分析 + 基本信息统计）。",
     )
     yield FunctionInfo.from_fn(
         _compare,
-        description="多植物生长进度对比图（折线图叠加对比）。输入用逗号分隔的植物名称。",
+        description="多植物生长进度对比。输入用逗号分隔的植物名称。",
     )
-
-
-def _setup_chinese_font(plt, font_manager):
-    """尝试加载中文字体，依次尝试多个常见字体名。"""
-    candidates = [
-        "WenQuanYi Micro Hei", "Noto Sans CJK SC", "SimHei",
-        "PingFang SC", "Heiti SC", "Microsoft YaHei", "Source Han Sans SC",
-        "AR PL UMing CN", "Droid Sans Fallback",
-    ]
-    for name in candidates:
-        found = font_manager.findfont(name, fallback_to_default=False)
-        if found and "LastResort" not in found:
-            plt.rcParams["font.sans-serif"] = [name]
-            plt.rcParams["axes.unicode_minus"] = False
-            return
-    plt.rcParams["axes.unicode_minus"] = False

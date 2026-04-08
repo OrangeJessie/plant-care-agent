@@ -1,0 +1,34 @@
+{
+  "projects": {
+    "栀子花": {
+      "name": "栀子花",
+      "species": "gardenia",
+      "location": "阳台东侧",
+      "planted_date": "2026-03-20",
+      "inspect_interval_hours": 12.0,
+      "last_inspected": "2026-04-08T08:00:00",
+      "active": true,
+      "inspection_enabled": true,
+      "fert_interval_days": 14,
+      "fert_type": "酸性肥料（硫酸亚铁/矾肥水）",
+      "fert_dormant_months": "11,12,1,2",
+      "water_interval_days": 2,
+      "pest_interval_days": 30
+    },
+    "玫瑰": {
+      "name": "玫瑰",
+      "species": "rose",
+      "location": "阳台南侧",
+      "planted_date": "2026-03-22",
+      "inspect_interval_hours": 12.0,
+      "last_inspected": "2026-04-08T08:00:00",
+      "active": true,
+      "inspection_enabled": true,
+      "fert_interval_days": 10,
+      "fert_type": "复合肥（N:P:K=15:15:15）",
+      "fert_dormant_months": "12,1",
+      "water_interval_days": 3,
+      "pest_interval_days": 14
+    }
+  }
+}
