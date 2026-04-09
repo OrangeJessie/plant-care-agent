@@ -76,19 +76,40 @@ function_groups:
   growth_journal:
     _type: growth_journal
     journal_dir: ./data/garden
+# ── LLM 配置 ─────────────────────────────────────────────────────────────────
+# 同时支持「本地部署」和「外部 API」两种接入方式，按需选择：
+#
+#   本地部署（Ollama）：数据不出本机、零调用成本、离线可用
+#   外部 API：零部署成本、可调用最新大参数模型
+#
+# 也可以混合使用，例如主对话走本地、图像诊断走外部 API。
+# 切换时只需修改下方 api_key / base_url / model_name 即可。
+# ─────────────────────────────────────────────────────────────────────────────
 llms:
   local_llm:
     _type: openai
+    # --- 方式一：本地部署（Ollama） ---
     api_key: EMPTY
     base_url: http://localhost:11434/v1
     model_name: qwen3.5:35b
+    # --- 方式二：外部 API（取消注释并填入你的密钥） ---
+    # api_key: sk-your-api-key-here
+    # base_url: https://api.openai.com/v1          # OpenAI
+    # base_url: https://api.deepseek.com/v1        # DeepSeek
+    # base_url: https://dashscope.aliyuncs.com/compatible-mode/v1  # 阿里云百炼
+    # model_name: gpt-4o                           # 或 deepseek-chat / qwen-plus 等
     temperature: 0.3
     max_tokens: 4096
   vision_llm:
     _type: openai
+    # --- 方式一：本地部署（Ollama） ---
     api_key: EMPTY
     base_url: http://localhost:11434/v1
     model_name: qwen3.5:35b
+    # --- 方式二：外部 API ---
+    # api_key: sk-your-api-key-here
+    # base_url: https://api.openai.com/v1
+    # model_name: gpt-4o
     temperature: 0.2
     max_tokens: 4096
 workflow:

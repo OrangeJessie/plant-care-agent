@@ -7,7 +7,7 @@ from pathlib import Path
 
 _lock = threading.Lock()
 
-DEFAULT_MD_HEADER = """# Plant Care Agent · 记忆与日志
+DEFAULT_MD_HEADER = """# Plant Care Agent（种田宝）· 记忆与日志
 
 本文件由服务自动写入，包含：
 

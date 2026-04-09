@@ -1,4 +1,4 @@
-# 🌱 Plant Care Agent — 花花助手
+# 🌱 Plant Care Agent — 种田宝
 
 基于 [NVIDIA NeMo Agent Toolkit](https://github.com/NVIDIA/NeMo-Agent-Toolkit) 的植物种植全流程 AI 助手。架构上参考本机 `insightor`（Claude Code 风格 CLI）中 **Markdown 提示词 + Skills + 基础工具** 的分层方式：**提示词 Markdown 化**、**Skills 目录**、**只读文件 + Shell** 等基础能力。
 

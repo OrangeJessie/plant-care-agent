@@ -429,7 +429,7 @@ def main() -> None:
     if mode == "farm":
         banner = Panel.fit(
             Text.from_markup(
-                "[bold cyan]农场智管[/bold cyan]  [dim]·[/dim]  "
+                "[bold cyan]种田宝·农业版[/bold cyan]  [dim]·[/dim]  "
                 "[white]Farm Management Agent[/white]\n"
                 "[dim]连接 NAT OpenAI 兼容接口 · 大规模农业模式[/dim]"
             ),
@@ -439,7 +439,7 @@ def main() -> None:
     else:
         banner = Panel.fit(
             Text.from_markup(
-                "[bold cyan]花花助手[/bold cyan]  [dim]·[/dim]  "
+                "[bold cyan]种田宝·个人版[/bold cyan]  [dim]·[/dim]  "
                 "[white]Plant Care Agent[/white]\n"
                 "[dim]连接 NAT OpenAI 兼容接口 · 个人养护模式[/dim]"
             ),
